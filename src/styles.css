@@ -1,0 +1,992 @@
+:root {
+  --paper: #ece9e3;
+  --paper-2: #f6f3ee;
+  --ink: #211d1b;
+  --ink-2: #5c554f;
+  --ink-3: #978f87;
+  --rule: #d4cec6;
+  --glass: rgba(248, 246, 242, 0.86);
+  --gold: #b98628;
+  --gold-bright: #d6ad4c;
+  --button: #332a27;
+  --button-hover: #493c37;
+  --danger: #9b4b3f;
+
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --margin: 24px;
+  --panel-width: 300px;
+  --ease: cubic-bezier(0.22, 0.8, 0.26, 1);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--serif);
+  font-size: 15px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+#app {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+}
+
+h1,
+h2,
+p,
+dl,
+dd,
+ol {
+  margin: 0;
+}
+
+button,
+input,
+output {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
+/* ---- Scene ---------------------------------------------------------------------------------- */
+
+.scene {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  outline: none;
+  touch-action: none;
+  cursor: default;
+}
+
+.scene[data-cursor="grab"] { cursor: grab; }
+.scene[data-cursor="grabbing"] { cursor: grabbing; }
+.scene[data-cursor="strike"] { cursor: crosshair; }
+.scene[data-cursor="brush"] {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Ccircle cx='14' cy='14' r='9' fill='rgba(214,173,76,0.22)' stroke='%23211d1b' stroke-opacity='0.75' stroke-width='1.3'/%3E%3Ccircle cx='14' cy='14' r='10.2' fill='none' stroke='%23f6f3ee' stroke-opacity='0.8' stroke-width='1'/%3E%3Ccircle cx='14' cy='14' r='1.4' fill='%23b98628'/%3E%3C/svg%3E") 14 14, crosshair;
+}
+
+/* Everything laid over the canvas lets pointer events through unless it is a real control. */
+.masthead,
+.howto,
+.status,
+.hint,
+.coach {
+  pointer-events: none;
+}
+
+/* ---- Masthead ------------------------------------------------------------------------------- */
+
+.masthead {
+  position: absolute;
+  top: clamp(40px, 8.4vh, 88px);
+  left: clamp(24px, 5.4vw, 82px);
+  max-width: min(46vw, 620px);
+}
+
+.eyebrow {
+  font-size: 12px;
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.title {
+  margin: 0.06em 0 0 -0.045em;
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 400;
+  font-size: clamp(64px, 8.1vw, 124px);
+  line-height: 1.02;
+  letter-spacing: -0.012em;
+  color: var(--ink);
+}
+
+.caption {
+  margin-top: 0.5em;
+  font-style: italic;
+  font-size: clamp(18px, 1.82vw, 27px);
+  color: var(--ink);
+}
+
+.masthead-rule {
+  display: block;
+  width: 56px;
+  height: 1px;
+  margin: 26px 0 22px;
+  background: var(--ink);
+  opacity: 0.75;
+}
+
+.support {
+  max-width: 21.5em;
+  font-size: clamp(14px, 1.16vw, 17.5px);
+  line-height: 1.42;
+  letter-spacing: 0.01em;
+  color: var(--ink);
+}
+
+/* ---- Status pill ---------------------------------------------------------------------------- */
+
+.status {
+  position: absolute;
+  top: var(--margin);
+  right: calc(var(--panel-width) + var(--margin) * 2 + 6px);
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 35px;
+  padding: 0 17px 0 14px;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  border-radius: 999px;
+  background: rgba(244, 241, 235, 0.72);
+  backdrop-filter: blur(14px) saturate(1.1);
+  -webkit-backdrop-filter: blur(14px) saturate(1.1);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.6) inset, 0 6px 22px -14px rgba(33, 29, 27, 0.5);
+  font-size: 13.5px;
+  letter-spacing: 0.035em;
+  white-space: nowrap;
+}
+
+.status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #5d8a4c;
+  box-shadow: 0 0 0 3px rgba(93, 138, 76, 0.16);
+  transition: background-color 0.4s var(--ease), box-shadow 0.4s var(--ease);
+}
+
+.status[data-phase="repairing"] .status-dot { background: var(--gold); box-shadow: 0 0 0 3px rgba(185, 134, 40, 0.2); }
+.status[data-phase="repaired"] .status-dot { background: #8aa57c; box-shadow: 0 0 0 3px rgba(138, 165, 124, 0.2); }
+.status[data-phase="paused"] .status-dot { background: #c9902f; box-shadow: 0 0 0 3px rgba(201, 144, 47, 0.2); }
+.status[data-phase="unavailable"] .status-dot { background: var(--danger); box-shadow: 0 0 0 3px rgba(155, 75, 63, 0.2); }
+
+/* ---- Control panel -------------------------------------------------------------------------- */
+
+.panel {
+  position: absolute;
+  top: var(--margin);
+  right: var(--margin);
+  width: var(--panel-width);
+  max-height: calc(100% - var(--margin) * 2);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 16px;
+  background: var(--glass);
+  backdrop-filter: blur(22px) saturate(1.15);
+  -webkit-backdrop-filter: blur(22px) saturate(1.15);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.7) inset, 0 28px 60px -34px rgba(33, 29, 27, 0.55), 0 2px 10px -6px rgba(33, 29, 27, 0.25);
+}
+
+.sheet-handle {
+  display: none;
+}
+
+.panel-body {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 20px 20px 18px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(33, 29, 27, 0.22) transparent;
+}
+
+.group + .group {
+  margin-top: 20px;
+}
+
+.group-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  font-family: var(--serif);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.group-title::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--rule);
+}
+
+.segmented {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.segmented button {
+  height: 32px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  font-size: 14.5px;
+  letter-spacing: 0.01em;
+  transition: background-color 0.22s var(--ease), color 0.22s var(--ease);
+}
+
+.segmented button:hover { background: rgba(33, 29, 27, 0.06); }
+.segmented button[aria-pressed="true"] {
+  background: var(--button);
+  color: var(--gold-bright);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.08) inset;
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  font-size: 14px;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  transition: background-color 0.2s var(--ease), border-color 0.2s var(--ease), color 0.2s var(--ease), opacity 0.2s var(--ease);
+}
+
+.button svg {
+  flex: none;
+  width: 17px;
+  height: 17px;
+}
+
+.button[hidden] {
+  display: none;
+}
+
+.button-dark {
+  background: var(--button);
+  color: #f4eee4;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.08) inset;
+}
+
+.button-dark:hover:not(:disabled) { background: var(--button-hover); }
+.button-dark[aria-pressed="true"] {
+  background: #1c1715;
+  border-color: var(--gold);
+  color: var(--gold-bright);
+  box-shadow: 0 0 0 2px rgba(185, 134, 40, 0.22);
+}
+
+.button-dark:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.button-gold {
+  color: var(--gold-bright);
+}
+
+.button-wide {
+  width: 100%;
+  margin-top: 12px;
+}
+
+.button-outline {
+  border-color: rgba(33, 29, 27, 0.55);
+  background: rgba(255, 255, 255, 0.28);
+  font-size: 12.5px;
+  gap: 7px;
+  padding: 0 6px;
+}
+
+.button-outline:hover { background: rgba(255, 255, 255, 0.6); }
+.button-outline[aria-pressed="true"] {
+  background: var(--button);
+  border-color: var(--button);
+  color: #f4eee4;
+}
+
+.actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.slider {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(72px, 1fr) 34px;
+  align-items: center;
+  column-gap: 12px;
+  height: 28px;
+  font-size: 14px;
+}
+
+.slider-label {
+  min-width: 78px;
+  white-space: nowrap;
+}
+
+.group-repair .slider-label {
+  min-width: 112px;
+}
+
+.slider-value {
+  font-family: var(--mono);
+  font-size: 12px;
+  text-align: right;
+  color: var(--ink-2);
+}
+
+.slider input[type="range"] {
+  --fill: 50%;
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 20px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.slider input[type="range"]::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--ink) 0 var(--fill), rgba(33, 29, 27, 0.2) var(--fill) 100%);
+}
+
+.slider input[type="range"]::-moz-range-track {
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--ink) 0 var(--fill), rgba(33, 29, 27, 0.2) var(--fill) 100%);
+}
+
+.slider input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  margin-top: -5px;
+  border: 1px solid rgba(33, 29, 27, 0.35);
+  border-radius: 50%;
+  background: #fbf9f5;
+  box-shadow: 0 1px 3px rgba(33, 29, 27, 0.35);
+}
+
+.slider input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: 1px solid rgba(33, 29, 27, 0.35);
+  border-radius: 50%;
+  background: #fbf9f5;
+  box-shadow: 0 1px 3px rgba(33, 29, 27, 0.35);
+}
+
+.swatches {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.swatch {
+  display: grid;
+  justify-items: center;
+  gap: 7px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 12px;
+  letter-spacing: 0.01em;
+}
+
+.swatch-chip {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  border-radius: 5px;
+  box-shadow: 0 0 0 1px rgba(33, 29, 27, 0.14), 0 3px 8px -5px rgba(33, 29, 27, 0.6);
+  transition: box-shadow 0.22s var(--ease), transform 0.22s var(--ease);
+}
+
+.swatch:hover .swatch-chip { transform: translateY(-1px); }
+.swatch[aria-pressed="true"] .swatch-chip {
+  box-shadow: 0 0 0 2px var(--paper-2), 0 0 0 3.5px var(--gold), 0 4px 10px -5px rgba(33, 29, 27, 0.6);
+}
+
+.stats > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  height: 22px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+.stats dd {
+  font-variant-numeric: tabular-nums;
+}
+
+.progress {
+  display: grid;
+  grid-template-columns: 1fr 34px;
+  align-items: center;
+  column-gap: 12px;
+  margin-top: 10px;
+}
+
+.progress-track {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(33, 29, 27, 0.16);
+  box-shadow: 0 0 0 1px rgba(185, 134, 40, 0.28);
+  overflow: hidden;
+}
+
+.progress-fill {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--gold), var(--gold-bright));
+  transition: width 0.3s var(--ease);
+}
+
+.progress-value {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  text-align: right;
+  color: var(--ink-2);
+}
+
+.footer-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1.25fr;
+  gap: 8px;
+  margin-top: 22px;
+}
+
+/* Development aid, present only with ?debug. */
+.quality {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 12px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+
+.quality select {
+  padding: 3px 6px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.4);
+  font: inherit;
+  color: var(--ink);
+}
+
+/* ---- How-to --------------------------------------------------------------------------------- */
+
+.howto {
+  position: absolute;
+  left: clamp(24px, 5.4vw, 82px);
+  bottom: clamp(26px, 6vh, 62px);
+  max-width: min(56vw, 760px);
+}
+
+.eyebrow-ruled {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.eyebrow-ruled::after {
+  content: "";
+  width: 96px;
+  height: 1px;
+  background: var(--ink);
+  opacity: 0.5;
+}
+
+.howto-line {
+  margin-top: 18px;
+  font-style: italic;
+  font-size: clamp(18px, 1.62vw, 24px);
+}
+
+.howto-line::before {
+  content: "";
+  display: block;
+  width: 46px;
+  height: 1px;
+  margin-bottom: 14px;
+  background: var(--ink);
+  opacity: 0.6;
+}
+
+.howto-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+  margin-top: 10px;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+  font-size: 14.5px;
+  letter-spacing: 0.01em;
+}
+
+.howto-steps li {
+  counter-increment: step;
+}
+
+.howto-steps li::before {
+  content: counter(step) ".\00a0\00a0";
+}
+
+.howto-detail {
+  max-width: 104ch;
+  margin-top: 12px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  letter-spacing: 0.01em;
+  color: var(--ink-2);
+}
+
+/* ---- Hint ----------------------------------------------------------------------------------- */
+
+.hint {
+  position: absolute;
+  left: calc((100% - var(--panel-width) - var(--margin) * 2) * 0.66);
+  top: clamp(76px, 10.5vh, 112px);
+  max-width: min(70vw, 460px);
+  padding: 9px 18px;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  border-radius: 999px;
+  background: rgba(246, 243, 238, 0.82);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: 0 10px 30px -18px rgba(33, 29, 27, 0.6);
+  font-style: italic;
+  font-size: 14px;
+  text-align: center;
+  opacity: 0;
+  transform: translate(-50%, -6px);
+  transition: opacity 0.35s var(--ease), transform 0.35s var(--ease);
+  white-space: nowrap;
+}
+
+.hint[data-visible="true"] {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* ---- Coach: guidance set beside the object, the first time it is mended ----------------------- */
+
+.coach {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: max-content;
+  max-width: min(78vw, 31ch);
+  font-style: italic;
+  font-size: clamp(15px, 1.18vw, 17.5px);
+  line-height: 1.42;
+  letter-spacing: 0.005em;
+  text-align: center;
+  text-wrap: balance;
+  color: var(--ink);
+  opacity: 0;
+  transition: opacity 0.7s var(--ease);
+}
+
+.coach::before {
+  content: "";
+  display: block;
+  width: 34px;
+  height: 1px;
+  margin: 0 auto 13px;
+  background: var(--gold);
+}
+
+.coach[data-visible="true"] {
+  opacity: 1;
+}
+
+/* ---- Fallback ------------------------------------------------------------------------------- */
+
+.fallback {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  background:
+    radial-gradient(120% 90% at 30% 20%, var(--paper-2), transparent 70%),
+    var(--paper);
+  text-align: center;
+}
+
+.fallback[hidden] {
+  display: none;
+}
+
+.fallback-card {
+  max-width: 560px;
+}
+
+.fallback .title {
+  margin-left: 0;
+  font-size: clamp(60px, 13vw, 124px);
+}
+
+.fallback-text {
+  margin-top: 28px;
+  font-size: 17px;
+  line-height: 1.55;
+  color: var(--ink-2);
+}
+
+.fallback-detail {
+  margin-top: 16px;
+  font-size: 13.5px;
+  font-style: italic;
+  color: var(--ink-3);
+}
+
+body.is-unavailable .scene,
+body.is-unavailable .masthead,
+body.is-unavailable .panel,
+body.is-unavailable .howto,
+body.is-unavailable .hint,
+body.is-unavailable .coach {
+  display: none;
+}
+
+body.is-unavailable .status {
+  z-index: 11;
+  right: var(--margin);
+}
+
+/* ---- Bottom sheet (≤ 900 px) ------------------------------------------------------------------ */
+
+@media (max-width: 900px) {
+  :root {
+    --margin: 16px;
+  }
+
+  .masthead {
+    top: calc(max(22px, env(safe-area-inset-top)) + 46px);
+    left: max(22px, env(safe-area-inset-left));
+    max-width: min(78vw, 520px);
+  }
+
+  .title {
+    font-size: clamp(54px, 13vw, 96px);
+  }
+
+  .masthead-rule {
+    margin: 16px 0 14px;
+  }
+
+  .status {
+    top: max(14px, env(safe-area-inset-top));
+    right: max(14px, env(safe-area-inset-right));
+    height: 32px;
+    font-size: 12.5px;
+  }
+
+  .panel {
+    top: auto;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: auto;
+    max-height: none;
+    border-radius: 18px 18px 0 0;
+    border-bottom: 0;
+    padding-bottom: env(safe-area-inset-bottom);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.7) inset, 0 -18px 50px -30px rgba(33, 29, 27, 0.6);
+  }
+
+  .sheet-handle {
+    position: relative;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    flex: none;
+    width: 100%;
+    height: 56px;
+    padding: 0 22px 10px;
+    border: 0;
+    background: transparent;
+    text-align: left;
+  }
+
+  .sheet-grip {
+    position: absolute;
+    top: 9px;
+    left: 50%;
+    width: 44px;
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(33, 29, 27, 0.28);
+    transform: translateX(-50%);
+  }
+
+  .sheet-title {
+    font-size: 20px;
+    letter-spacing: 0.005em;
+  }
+
+  .sheet-handle svg {
+    width: 18px;
+    height: 18px;
+    margin-bottom: 4px;
+    transition: transform 0.3s var(--ease);
+  }
+
+  .panel[data-open="true"] .sheet-handle svg {
+    transform: rotate(180deg);
+  }
+
+  /* Collapsed, the controls are out of sight and out of the tab order as well. */
+  .panel-body {
+    max-height: 0;
+    padding: 0 22px;
+    overflow: hidden;
+    visibility: hidden;
+    transition: max-height 0.38s var(--ease), padding 0.38s var(--ease), visibility 0s linear 0.38s;
+  }
+
+  .panel[data-open="true"] .panel-body {
+    max-height: calc(64vh - 56px);
+    padding: 6px 22px 22px;
+    overflow-y: auto;
+    visibility: visible;
+    transition-delay: 0s;
+  }
+
+  .button,
+  .segmented button {
+    height: 42px;
+  }
+
+  .slider {
+    height: 38px;
+  }
+
+  .howto {
+    left: max(22px, env(safe-area-inset-left));
+    bottom: calc(56px + env(safe-area-inset-bottom) + 18px);
+    max-width: calc(100vw - 44px);
+  }
+
+  .howto-detail {
+    display: none;
+  }
+
+  body.sheet-open .howto {
+    display: none;
+  }
+
+  /* On a phone the hint takes the how-to's place for as long as it shows. */
+  .hint {
+    top: auto;
+    left: 50%;
+    bottom: calc(56px + env(safe-area-inset-bottom) + 16px);
+    width: max-content;
+    max-width: min(calc(100vw - 32px), 420px);
+    border-radius: 22px;
+    white-space: normal;
+    text-wrap: balance;
+  }
+
+  #app:has(.hint[data-visible="true"]) .howto {
+    opacity: 0;
+  }
+
+  .howto {
+    transition: opacity 0.3s var(--ease);
+  }
+
+  body.sheet-open .hint {
+    display: none;
+  }
+}
+
+@media (max-width: 620px) {
+  .title {
+    font-size: clamp(46px, 16vw, 72px);
+  }
+
+  .caption {
+    font-size: 17px;
+  }
+
+  .support {
+    max-width: 19em;
+    font-size: 14px;
+  }
+
+  .status {
+    gap: 8px;
+    padding: 0 13px 0 11px;
+    font-size: 12px;
+  }
+
+  .swatches {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+  }
+
+  .swatch-chip {
+    aspect-ratio: 5 / 2;
+  }
+
+  .howto-line {
+    margin-top: 12px;
+    font-size: 17px;
+  }
+
+  .howto-steps {
+    display: none;
+  }
+}
+
+/* Between the phone layout and a full desktop the hint has less room beside the title: let it wrap. */
+@media (min-width: 901px) and (max-width: 1380px) {
+  .hint {
+    /* Never further left than the end of the title. */
+    left: max(calc((100% - var(--panel-width) - var(--margin) * 2) * 0.66), calc(34.7vw + 132px));
+    width: max-content;
+    max-width: clamp(230px, calc(62.6vw - 492px), 460px);
+    border-radius: 22px;
+    white-space: normal;
+    text-wrap: balance;
+  }
+}
+
+/* A laptop-height window: tighten the panel so the whole of it, footer included, stays on screen. */
+@media (min-width: 901px) and (max-height: 900px) {
+  .panel-body { padding: 14px 18px 12px; }
+  .group + .group { margin-top: 12px; }
+  .group-title { margin-bottom: 8px; }
+  .segmented button { height: 28px; }
+  .button { height: 32px; }
+  .actions { margin-bottom: 8px; }
+  .slider { height: 23px; }
+  .swatch { gap: 5px; }
+  .swatch-chip { aspect-ratio: 2 / 1; }
+  .button-wide { margin-top: 8px; }
+  .stats > div { height: 19px; }
+  .progress { margin-top: 6px; }
+  .footer-actions { margin-top: 12px; }
+}
+
+/* Shorter still, the panel scrolls, but Reset, Pause and Reset view stay pinned at its foot. */
+@media (min-width: 901px) and (max-height: 730px) {
+  :root { --margin: 16px; }
+
+  .footer-actions {
+    position: sticky;
+    /* Sticks to the padding edge of the scrolling body, not 12px above it. */
+    bottom: -12px;
+    margin: 10px -18px -12px;
+    padding: 10px 18px 12px;
+    border-radius: 0 0 15px 15px;
+    background: linear-gradient(to bottom, rgba(245, 242, 237, 0), rgba(245, 242, 237, 0.97) 9px);
+  }
+}
+
+/* Short viewports: keep the masthead out of the bowl's way and drop the secondary copy. */
+@media (max-height: 760px) {
+  .howto-detail {
+    display: none;
+  }
+
+  /* The bowl sits higher here: wrap the supporting line before it reaches the rim. */
+  .support {
+    max-width: 18em;
+  }
+}
+
+@media (max-height: 560px) {
+  .masthead {
+    top: max(14px, env(safe-area-inset-top));
+  }
+
+  .title {
+    font-size: clamp(38px, 11vh, 60px);
+  }
+
+  .caption {
+    margin-top: 0.2em;
+    font-size: 15px;
+  }
+
+  .masthead-rule,
+  .support,
+  .howto-steps,
+  .howto .eyebrow {
+    display: none;
+  }
+
+  .howto-line {
+    margin-top: 0;
+    font-size: 15px;
+  }
+
+  .howto-line::before {
+    display: none;
+  }
+
+  .panel[data-open="true"] .panel-body {
+    max-height: calc(78vh - 56px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
