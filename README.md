@@ -10,8 +10,8 @@ mended along exactly the lines it broke on.
 The fracture pattern is generated from the impact. The shards are closed meshes and rigid bodies.
 The gold follows the crack network that the fracture produced; nothing is pre-authored.
 
-**Live demo:** not deployed yet. The repository includes a GitHub Pages workflow; once Pages is
-enabled the build will be served at `https://tahabakri.github.io/kintsugi-webgpu/`.
+**Live demo:** <https://tahabakri.github.io/kintsugi-webgpu/> (needs a browser with WebGPU; built and
+deployed from `main` by the Pages workflow in this repository).
 
 ## What it does
 
