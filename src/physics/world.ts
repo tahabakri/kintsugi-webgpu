@@ -3,6 +3,7 @@ import { MATERIAL_PHYSICS, SIM, STAGE } from '../config';
 import type { ShardGeometry } from '../fracture/shard-builder';
 import { quatRotate, type Quat } from '../math/quat';
 import { add3, clampLength3, len3, type Vec3 } from '../math/vec';
+import { PoseHistory, type BodyPose } from './interpolation';
 import { attachShardColliders, createShardBody, SHARD_DAMPING } from './shard-body';
 
 export type Body = RAPIER.RigidBody;
@@ -30,7 +31,7 @@ export type BodyTag = { kind: 'shard'; id: number } | { kind: 'ball'; index: num
 
 /** What the intact bowl ran into during a step, with pre-solve velocities. */
 export interface Contact {
-  other: 'ball' | 'static';
+  other: 'ball' | 'table' | 'stage';
   ballIndex: number;
   /** Contact position and normal (pointing into the bowl) in world space. */
   point: Vec3;
@@ -39,6 +40,13 @@ export interface Contact {
   relativeVelocity: Vec3;
   normalSpeed: number;
   effectiveMass: number;
+  /** The other body's own velocity before the solver ran. */
+  otherVelocity: Vec3;
+  /** Speed of the other body relative to the bowl along the contact surface, before the solver ran. */
+  tangentSpeed: number;
+  /** The bowl's own linear and angular velocity just before the solver responded. */
+  bodyLinear: Vec3;
+  bodyAngular: Vec3;
 }
 
 /** One rigid body of ceramic: the shards riding on it and a sphere round all of them. */
@@ -102,6 +110,9 @@ export class PhysicsWorld {
   /** Shards whose convex hull could not be built and that fell back to a ball collider. */
   colliderFallbacks = 0;
   private fixedBody!: Body;
+  /** The table top, to tell it from the rest of the stage. */
+  private tableHandle = -1;
+  private history = new PoseHistory();
   /** Invisible limits of the room; they stop stray pieces but never count as something in view. */
   private boundsBody!: Body;
   /** Which shard each collider belongs to, since bonded shards share a body. */
@@ -143,9 +154,9 @@ export class PhysicsWorld {
     // Table: a block from the wall to its front edge, top surface at y = 0.
     const tableHalf = -STAGE.floorY / 2;
     const tableDepth = (STAGE.wallDistance + STAGE.tableFront) / 2, tableCentre = (STAGE.tableFront - STAGE.wallDistance) / 2;
-    fixed(RAPIER.ColliderDesc.cuboid(STAGE.tableHalfWidth, tableHalf, tableDepth)
+    this.tableHandle = fixed(RAPIER.ColliderDesc.cuboid(STAGE.tableHalfWidth, tableHalf, tableDepth)
       .setTranslation(front[0] * tableCentre, -tableHalf, front[2] * tableCentre)
-      .setRotation(turn));
+      .setRotation(turn)).handle;
     fixed(RAPIER.ColliderDesc.cuboid(40, 0.5, 40).setTranslation(0, STAGE.floorY - 0.5, 0));
 
     // Back wall, plus invisible bounds on the other three sides and above so nothing leaves the room.
@@ -165,6 +176,7 @@ export class PhysicsWorld {
   reset(): void {
     this.world.free();
     this.events.free();
+    this.history = new PoseHistory();
     this.pieces.clear();
     this.colliderShard.clear();
     this.tacks.clear();
@@ -278,6 +290,20 @@ export class PhysicsWorld {
     body.setAngvel({ x: 0, y: 0, z: 0 }, true);
   }
 
+  /** Pose of a body between the last two steps (`alpha` 0 = the step before, 1 = now), for drawing only. */
+  blendBody(body: Body, alpha: number): BodyPose {
+    return this.history.blend(body, alpha);
+  }
+
+  /** The shard's pose between the last two fixed steps, for drawing only. */
+  poseAt(id: number, alpha: number): Pose | null {
+    const piece = this.pieces.get(id);
+    if (!piece) return null;
+    const { position, rotation } = this.history.blend(piece.body, alpha);
+    const o = piece.offset;
+    return { position: o[0] === 0 && o[1] === 0 && o[2] === 0 ? position : add3(position, quatRotate(rotation, o)), rotation };
+  }
+
   /** Pose of a shard's own frame (its centre of mass and the bowl's axes) in the world. */
   pose(id: number): Pose | null {
     const piece = this.pieces.get(id);
@@ -311,6 +337,7 @@ export class PhysicsWorld {
    * during the step, described with velocities from before the solver responded.
    */
   step(watch: Piece | null, ballBodies: readonly Body[] = []): Contact | null {
+    this.history.record([...this.bodies(), ...ballBodies]);
     const before = watch ? this.snapshot(watch.body) : null;
     const ballsBefore = watch ? ballBodies.map((body) => this.snapshot(body)) : [];
     this.world.step(this.events);
@@ -325,6 +352,7 @@ export class PhysicsWorld {
       const watchFirst = b1.handle === watch.body.handle;
       if (!watchFirst && b2.handle !== watch.body.handle) return;
       const otherBody = watchFirst ? b2 : b1;
+      const otherCollider = watchFirst ? c2 : c1;
       const tag = otherBody.userData as BodyTag | undefined;
       if (!tag || tag.kind === 'shard' || tag.kind === 'grab') return;
 
@@ -360,7 +388,13 @@ export class PhysicsWorld {
       const effectiveMass = Number.isFinite(otherMass) ? (mass * otherMass) / (mass + otherMass) : mass;
       const energy = effectiveMass * normalSpeed * normalSpeed;
       if (!hardest || energy > hardest.effectiveMass * hardest.normalSpeed * hardest.normalSpeed) {
-        hardest = { other: ballIndex >= 0 ? 'ball' : 'static', ballIndex, point, normal, relativeVelocity, normalSpeed, effectiveMass };
+        const tangentSpeed = Math.hypot(
+          relativeVelocity[0] - normal[0] * (relativeVelocity[0] * normal[0] + relativeVelocity[1] * normal[1] + relativeVelocity[2] * normal[2]),
+          relativeVelocity[1] - normal[1] * (relativeVelocity[0] * normal[0] + relativeVelocity[1] * normal[1] + relativeVelocity[2] * normal[2]),
+          relativeVelocity[2] - normal[2] * (relativeVelocity[0] * normal[0] + relativeVelocity[1] * normal[1] + relativeVelocity[2] * normal[2]),
+        );
+        const other = ballIndex >= 0 ? 'ball' : otherCollider.handle === this.tableHandle ? 'table' : 'stage';
+        hardest = { other, ballIndex, point, normal, relativeVelocity, normalSpeed, effectiveMass, tangentSpeed, otherVelocity, bodyLinear: before.linear, bodyAngular: before.angular };
       }
     });
 

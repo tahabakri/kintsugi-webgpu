@@ -246,9 +246,9 @@ test.describe('the study', () => {
     await expect(page.locator('canvas.scene')).toHaveAttribute('data-cursor', 'strike');
     const bowl = await hook(page, (k) => k.getScreenPoints().shards[0]);
     await page.mouse.click(bowl.x - 60, bowl.y - 10);
-    // Nothing breaks on the click itself: the ball still has to get there.
+    // Nothing breaks on the click itself: the ball still has to get there. Strike stays armed.
     expect(await hook(page, (k) => k.stats.fragments)).toBe(1);
-    await expect(strike).toHaveAttribute('aria-pressed', 'false');
+    await expect(strike).toHaveAttribute('aria-pressed', 'true');
     await page.waitForFunction(() => window.__kintsugi!.stats.fragments > 1, null, { timeout: 15_000 });
     const after = await hook(page, (k) => ({ stats: k.stats, phase: k.state.phase }));
     expect(after.phase).toBe('fractured');
@@ -305,7 +305,11 @@ test.describe('the study', () => {
     const loose = await hook(page, (k) => {
       for (const p of k.getScreenPoints().shards) {
         if (p.id === 0 || p.x < 260 || p.x > 1050 || p.y < 120 || p.y > 960) continue;
-        if (k.probe(p.x, p.y).shard === p.id) return p;
+        // Somewhere on the piece with no closed crack within the brush's reach.
+        for (const [dx, dy] of [[0, 0], [8, 0], [-8, 0], [0, 8], [0, -8], [16, 6], [-16, 6], [16, -6], [-16, -6]]) {
+          const q = k.probe(p.x + dx, p.y + dy);
+          if (q.shard === p.id && q.crack === null) return { x: p.x + dx, y: p.y + dy };
+        }
       }
       return null;
     });
@@ -565,6 +569,208 @@ test.describe('the study', () => {
         expect(Math.hypot(piece.position[0] - was.position[0], piece.position[1] - was.position[1], piece.position[2] - was.position[2])).toBeLessThan(0.03);
       }
       await page.screenshot({ path: 'test-results/07-recovered.png' });
+    });
+  });
+
+  test.describe('striking and handling', () => {
+    /** The page again at a size where the browser delivers pointer events at about 60 Hz, scene at its lowest scale. */
+    async function steady(page: Page): Promise<void> {
+      await page.setViewportSize({ width: 1000, height: 700 });
+      await page.goto('/?q=0.4');
+      await page.waitForFunction(() => window.__kintsugi?.ready === true, null, { timeout: 30_000 });
+      await page.waitForTimeout(500);
+    }
+    const physics = (page: Page) => hook(page, (k) => k.physics);
+    /** The hardest impact judged so far. */
+    async function strongest(page: Page) {
+      const { impacts } = await physics(page);
+      return impacts.reduce((best, i) => (i.normalizedEnergy > best.normalizedEnergy ? i : best), impacts[0]);
+    }
+    /** Somewhere on a piece that the pointer would pick up. */
+    const onAPiece = (page: Page) => hook(page, (k) => {
+      for (const p of k.getScreenPoints().shards) {
+        for (const [dx, dy] of [[0, 0], [10, 0], [-10, 0], [0, 10], [0, -10], [22, 6], [-22, 6]]) {
+          if (k.probe(p.x + dx, p.y + dy).shard !== null) return { x: p.x + dx, y: p.y + dy };
+        }
+      }
+      return null;
+    });
+    /** Takes the bowl by its middle, lifts it, holds it still and lets go: whatever it falls from is the lift. */
+    async function liftAndLetFall(page: Page, lift: number): Promise<void> {
+      const bowl = await hook(page, (k) => k.getScreenPoints().shards[0]);
+      await page.mouse.move(bowl.x, bowl.y);
+      await page.waitForTimeout(150);
+      await page.mouse.down();
+      await page.mouse.move(bowl.x, bowl.y - lift, { steps: Math.max(6, Math.round(lift / 14)) });
+      await page.waitForTimeout(700);
+      await page.mouse.up();
+    }
+
+    test('Strike stays armed: one ball per click until Escape or the button turns it off', async ({ page }) => {
+      await steady(page);
+      const strike = page.getByRole('button', { name: 'Strike bowl' });
+      await strike.click();
+      await expect(strike).toHaveAttribute('aria-pressed', 'true');
+      expect(await hook(page, (k) => k.state.tool)).toBe('strike');
+      expect((await physics(page)).activeStrikers).toBe(0);
+
+      // Three clicks, the first on the whole bowl, the others on whatever is left of it.
+      for (let thrown = 1; thrown <= 3; thrown++) {
+        const at = await onAPiece(page);
+        expect(at, 'something to aim at').not.toBeNull();
+        await page.mouse.click(at!.x, at!.y);
+        await page.waitForTimeout(400);
+        expect((await physics(page)).activeStrikers).toBe(thrown);
+        expect(await hook(page, (k) => k.state.tool)).toBe('strike');
+        await expect(strike).toHaveAttribute('aria-pressed', 'true');
+      }
+      // The first ball broke the bowl; striking carried on after the fracture.
+      expect(await hook(page, (k) => k.stats.fragments)).toBeGreaterThan(1);
+
+      await page.keyboard.press('Escape');
+      expect(await hook(page, (k) => k.state.tool)).toBe('none');
+      await expect(strike).toHaveAttribute('aria-pressed', 'false');
+      const at = await onAPiece(page);
+      await page.mouse.click(at!.x, at!.y);
+      await page.waitForTimeout(400);
+      expect((await physics(page)).activeStrikers).toBe(3);
+
+      // The button is a toggle.
+      await strike.click();
+      expect(await hook(page, (k) => k.state.tool)).toBe('strike');
+      await strike.click();
+      expect(await hook(page, (k) => k.state.tool)).toBe('none');
+      await page.mouse.click(at!.x, at!.y);
+      await page.waitForTimeout(300);
+      expect((await physics(page)).activeStrikers).toBe(3);
+    });
+
+    test('a gentle placement leaves the bowl whole', async ({ page }) => {
+      await steady(page);
+      const bowl = await hook(page, (k) => k.getScreenPoints().shards[0]);
+      await page.mouse.move(bowl.x, bowl.y);
+      await page.waitForTimeout(150);
+      await page.mouse.down();
+      await page.mouse.move(bowl.x + 60, bowl.y - 90, { steps: 40 });
+      await page.waitForTimeout(250);
+      await page.mouse.move(bowl.x - 40, bowl.y - 90, { steps: 40 });
+      await page.waitForTimeout(250);
+      await page.mouse.move(bowl.x, bowl.y + 2, { steps: 70 });
+      await page.waitForTimeout(400);
+      await page.mouse.up();
+      await page.waitForTimeout(1500);
+      expect(await hook(page, (k) => k.state.phase)).toBe('intact');
+      expect((await strongest(page)).normalizedEnergy).toBeLessThan(0.1);
+    });
+
+    test('a hard throw downward breaks the bowl from the contact it makes, and nothing else', async ({ page }) => {
+      await steady(page);
+      const bowl = await hook(page, (k) => k.getScreenPoints().shards[0]);
+      await page.mouse.move(bowl.x, bowl.y);
+      await page.waitForTimeout(150);
+      await page.mouse.down();
+      await page.mouse.move(bowl.x, bowl.y - 260, { steps: 22 });
+      await page.waitForTimeout(250);
+      // A quick flick down, let go on the way.
+      await page.mouse.move(bowl.x, bowl.y - 150, { steps: 4 });
+      const during = await hook(page, (k) => k.physics.grabVelocity);
+      await page.mouse.up();
+      expect(during[1]).toBeLessThan(-2);
+      await page.waitForFunction(() => window.__kintsugi!.stats.fragments > 1, null, { timeout: 15_000 });
+
+      const release = (await physics(page)).lastRelease as { thrown: boolean; estimated: number[]; bodyBefore: number[]; bodyAfter: number[] };
+      expect(release.thrown).toBe(true);
+      expect(release.estimated[1]).toBeLessThan(-2);
+      // Letting go did not change the speed it was going: the frame after looks like the one before.
+      expect(Math.hypot(...release.bodyAfter) - Math.hypot(...release.bodyBefore)).toBeLessThan(0.26 * Math.hypot(...release.estimated) + 0.01);
+
+      const hit = await strongest(page);
+      expect(['table', 'stage']).toContain(hit.source);
+      expect(hit.fractured).toBe(true);
+      expect(hit.normalizedEnergy).toBeGreaterThanOrEqual(hit.threshold);
+      expect(hit.normalSpeed).toBeGreaterThan(8);
+      const info = await physics(page);
+      expect(info.lastImpact!.fractured).toBe(true);
+      expect(await hook(page, (k) => k.state.phase)).toBe('fractured');
+      // The pieces carried the bowl's own motion: no burst bigger than the fall itself.
+      expect(info.momentumError).toBeLessThan(0.25);
+    });
+
+    test('a bowl let go from a greater height arrives faster and harder, and breaks where the low one does not', async ({ page }) => {
+      await steady(page);
+      await liftAndLetFall(page, 28);
+      await page.waitForTimeout(1500);
+      const low = await strongest(page);
+      expect(await hook(page, (k) => k.state.phase)).toBe('intact');
+
+      await page.getByRole('button', { name: 'Reset', exact: true }).click();
+      await page.waitForTimeout(600);
+      await liftAndLetFall(page, 230);
+      await page.waitForFunction(() => window.__kintsugi!.stats.fragments > 1, null, { timeout: 15_000 });
+      const high = await strongest(page);
+
+      expect(high.normalSpeed).toBeGreaterThan(low.normalSpeed);
+      expect(high.normalizedEnergy).toBeGreaterThan(low.normalizedEnergy);
+      expect(low.fractured).toBe(false);
+      expect(high.fractured).toBe(true);
+      // Free fall: speed follows sqrt(2·g·h) (1 unit = 10 cm), whatever the lift was.
+      const fall = (speed: number) => (speed * speed) / (2 * 98.1);
+      expect(fall(high.normalSpeed)).toBeGreaterThan(fall(low.normalSpeed) * 4);
+    });
+
+    test('a hard sideways throw is judged by the same collision: a glancing slide counts for little', async ({ page }) => {
+      await steady(page);
+      const bowl = await hook(page, (k) => k.getScreenPoints().shards[0]);
+      await page.mouse.move(bowl.x, bowl.y);
+      await page.waitForTimeout(150);
+      await page.mouse.down();
+      await page.mouse.move(bowl.x, bowl.y - 90, { steps: 10 });
+      await page.waitForTimeout(250);
+      await page.mouse.move(bowl.x + 260, bowl.y - 90, { steps: 5 });
+      await page.mouse.up();
+      await page.waitForTimeout(3500);
+      const { impacts } = await physics(page);
+      const slide = impacts.filter((i) => i.tangentSpeed > 4).sort((a, b) => b.tangentSpeed - a.tangentSpeed)[0];
+      expect(slide, 'a contact made while sliding').toBeDefined();
+      expect(['table', 'stage']).toContain(slide.source);
+      // Whatever happened, it followed from the severity of the contact.
+      const hit = await strongest(page);
+      expect(await hook(page, (k) => k.state.phase)).toBe(hit.fractured ? 'fractured' : 'intact');
+      // A square hit at the same normal speed is worth more than a glancing one at the same total speed.
+      expect(slide.normalizedEnergy).toBeLessThan(0.5 * 0.5 * slide.effectiveMass * (slide.normalSpeed ** 2 + slide.tangentSpeed ** 2) * 1.1e-3 * 2.2 + 1e-6);
+    });
+
+    test('a held bowl follows a steady pointer without jumps and settles where it is put', async ({ page }) => {
+      await steady(page);
+      const bowl = await hook(page, (k) => k.getScreenPoints().shards[0]);
+      await page.mouse.move(bowl.x, bowl.y);
+      await page.waitForTimeout(150);
+      await page.mouse.down();
+      const grab = { x: bowl.x, y: bowl.y };
+      const samples: Array<{ x: number; y: number; px: number; py: number }> = [];
+      const held = () => hook(page, (k) => k.physics.grip!.screen!);
+      const start = await held();
+      for (let i = 1; i <= 50; i++) {
+        grab.x = bowl.x + i * 5;
+        grab.y = bowl.y - Math.min(i, 24) * 4;
+        await page.mouse.move(grab.x, grab.y);
+        const now = await held();
+        samples.push({ x: now[0], y: now[1], px: grab.x, py: grab.y });
+      }
+      await page.waitForTimeout(600);
+      const end = await held();
+      await page.mouse.up();
+
+      expect(samples.every((s) => Number.isFinite(s.x) && Number.isFinite(s.y))).toBe(true);
+      // No teleport: between one pointer event and the next the held point moves about as far as the pointer did.
+      let worst = 0;
+      for (let i = 1; i < samples.length; i++) worst = Math.max(worst, Math.hypot(samples[i].x - samples[i - 1].x, samples[i].y - samples[i - 1].y));
+      expect(worst).toBeLessThan(45);
+      // Weight: while it is being carried it trails the pointer, but by well under the width of the bowl.
+      const lag = samples.slice(8).map((s) => Math.hypot(s.x - (s.px - (bowl.x - start[0])), s.y - (s.py - (bowl.y - start[1]))));
+      expect(Math.max(...lag)).toBeLessThan(120);
+      // Once the pointer stops the held point arrives under it.
+      expect(Math.hypot(end[0] - (grab.x - (bowl.x - start[0])), end[1] - (grab.y - (bowl.y - start[1])))).toBeLessThan(14);
     });
   });
 

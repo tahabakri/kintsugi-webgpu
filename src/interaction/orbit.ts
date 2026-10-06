@@ -6,6 +6,12 @@ const AZIMUTH_REACH = 1.12;
 const ELEVATION_MIN = 0.035;
 const ELEVATION_MAX = 1.2;
 const IDLE_DELAY = 6;
+/**
+ * Rate (per second) at which the camera closes on where the pointer has asked it to be. Pointer
+ * events arrive unevenly; this evens them out over about 40 ms, which is below what is noticed as
+ * lag but enough that a drag does not move in steps.
+ */
+const FOLLOW = 38;
 
 /**
  * Orbit, zoom and "reset view" for the camera, plus a barely perceptible idle sway that stops the
@@ -15,6 +21,10 @@ export class OrbitControls {
   private azimuth: number = CAMERA_DEFAULTS.azimuth;
   private elevation: number = CAMERA_DEFAULTS.elevation;
   private distance: number = CAMERA_DEFAULTS.distance;
+  /** Where the camera is drawn on screen: it follows the values above. */
+  private shownAzimuth: number = CAMERA_DEFAULTS.azimuth;
+  private shownElevation: number = CAMERA_DEFAULTS.elevation;
+  private shownDistance: number = CAMERA_DEFAULTS.distance;
   private easing = false;
   private idle = 0;
   private drift = 0;
@@ -75,8 +85,12 @@ export class OrbitControls {
     this.driftPhase += dt * this.drift;
     const sway = this.reducedMotion ? 0 : Math.sin(this.driftPhase * 0.21) * 0.028 * this.drift;
 
-    this.camera.azimuth = this.azimuth + sway;
-    this.camera.elevation = this.elevation;
-    this.camera.distance = this.distance;
+    const k = this.reducedMotion ? 1 : 1 - Math.exp(-dt * FOLLOW);
+    this.shownAzimuth += (this.azimuth - this.shownAzimuth) * k;
+    this.shownElevation += (this.elevation - this.shownElevation) * k;
+    this.shownDistance += (this.distance - this.shownDistance) * k;
+    this.camera.azimuth = this.shownAzimuth + sway;
+    this.camera.elevation = this.shownElevation;
+    this.camera.distance = this.shownDistance;
   }
 }

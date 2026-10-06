@@ -1,61 +1,82 @@
-import RAPIER from '@dimforge/rapier3d-compat';
 import { SIM } from '../config';
-import { quatErrorVector, quatFromAxisAngle, quatMul, quatNormalize, quatSlerp, type Quat } from '../math/quat';
-import { add3, clampLength3, len3, scale3, sub3, type Vec3 } from '../math/vec';
+import { quatConj, quatErrorVector, quatFromAxisAngle, quatMul, quatNormalize, quatRotate, quatSlerp, type Quat } from '../math/quat';
+import { add3, clampLength3, cross3, dot3, len3, scale3, sub3, type Vec3 } from '../math/vec';
+import { invert3, pointResponse, releaseVelocity, servoImpulse, smoothDamp, RELEASE_WINDOW, type HandSample, type Mat3 } from './hand';
 import { SHARD_DAMPING } from './shard-body';
-import { fromVec, toQuat, toVec, type Body, type BodyTag } from './world';
+import { fromVec, toQuat, toVec, type Body } from './world';
 
-/** How firmly a held piece keeps its orientation: natural frequency (rad/s) of the hold. */
-const HOLD_FREQUENCY = 46;
-/** Natural frequency (rad/s) of the spring that carries a held piece after the pointer. */
-const CARRY_FREQUENCY = 62;
-/** How far a piece hangs below where it is asked to be, on that spring under gravity. */
-export const CARRY_SAG = SIM.gravity / (CARRY_FREQUENCY * CARRY_FREQUENCY);
+/** Natural frequency (rad/s) of the critically damped target the pointer drives. */
+const HAND_FREQUENCY = 2 * Math.PI * 24;
+/** Natural frequency (rad/s) and damping ratio of the servo that pulls the picked point to the hand. */
+const SERVO_FREQUENCY = 2 * Math.PI * 18;
+const SERVO_DAMPING = 1;
+/** The hand can pull with at most this many times the piece's weight, so a heavy piece lags and swings. */
+const GRIP_STRENGTH = 14;
 
 /**
- * Holding a body with the pointer: a kinematic target follows the cursor and a spring joint drags
- * the body's picked point after it. Like a hand, the hold also resists the piece swinging round:
- * a soft torque keeps it near the orientation it was picked up in (or one it is being turned
- * to). Releasing hands the body the pointer's recent velocity.
+ * How firmly a held piece keeps its orientation: natural frequency (rad/s) of a torsion spring.
+ * Loose when handling, so a piece gripped by its rim hangs a little tilted; firm when fitting.
+ */
+export const HOLD = { handling: 14, fitting: 46 } as const;
+
+/** Angular damping while held, so a piece gripped off-centre swings once and settles. */
+const HELD_ANGULAR_DAMPING = 2.4;
+
+/** Fastest a piece may be let go at (world units per second); see `SIM.maxThrowSpeed`. */
+export const MAX_THROW_SPEED = SIM.maxThrowSpeed;
+
+/** What a release measured, for the debug hook. */
+export interface ReleaseRecord {
+  /** Hand velocity fitted to the last ~130 ms of its path. */
+  estimated: Vec3;
+  /** Velocity of the picked point just before and just after the release. */
+  before: Vec3;
+  after: Vec3;
+  /** Body velocity just before and just after. */
+  bodyBefore: Vec3;
+  bodyAfter: Vec3;
+  thrown: boolean;
+}
+
+/**
+ * A hand holding a piece by the point that was clicked. The pointer only sets a target; every
+ * fixed step the target is smoothed (critically damped), and a servo pulls the picked point to it
+ * with an impulse applied at that point, so a grip on the rim lifts, tilts and swings the piece
+ * differently from one near the middle. The piece is never moved directly. Gravity is carried by
+ * the hand, up to a limit, and a soft torsion spring stops it swinging wildly. At release the
+ * piece keeps the velocity it has, corrected by how far the servo was lagging the hand.
  */
 export class Grab {
   readonly body: Body;
   /** Orientation the hold is steadying the body towards. */
   orientation: Quat;
-  /** Where the pointer wants the picked point to be. */
-  point: Vec3;
+  /** The smoothed hand: where the picked point is being drawn to. */
+  readonly hand: Vec3;
+  readonly handVelocity: Vec3 = [0, 0, 0];
+  holdFrequency: number = HOLD.handling;
 
-  private readonly target: Body;
-  /** From the picked point to the body's centre of mass at the moment it was picked up. */
+  /** What the last release measured. */
+  static last: ReleaseRecord | null = null;
+
+  private readonly pick: Vec3;
   private readonly offset: Vec3;
-  private readonly joint: RAPIER.ImpulseJoint;
-  private readonly history: Array<{ time: number; point: Vec3 }> = [];
+  private target: Vec3;
+  private readonly samples: HandSample[] = [];
+  private time = 0;
 
-  constructor(private readonly world: RAPIER.World, body: Body, worldPoint: Vec3, time: number) {
+  constructor(body: Body, worldPoint: Vec3, time: number) {
     this.body = body;
-    this.point = [...worldPoint];
     this.orientation = toQuat(body.rotation());
-    // The spring acts on the centre of mass, carried by the same displacement as the cursor. A
-    // piece then lifts straight instead of hanging from the picked point like a pendulum.
     const centre = toVec(body.worldCom());
+    // The picked point in the body's frame, from its centre of mass, and in the world as a constant offset.
+    this.pick = quatRotate(quatConj(this.orientation), sub3(worldPoint, centre));
     this.offset = sub3(centre, worldPoint);
-    const local = toVec(body.localCom());
-    this.target = world.createRigidBody(
-      RAPIER.RigidBodyDesc.kinematicPositionBased()
-        .setTranslation(centre[0], centre[1], centre[2])
-        .setUserData({ kind: 'grab' } satisfies BodyTag),
-    );
-    // Stiff enough that the piece hangs within a few millimetres of the cursor under real
-    // gravity, and close to critically damped so it does not bounce on the spring.
-    const mass = Math.max(0.005, body.mass());
-    const frequency = CARRY_FREQUENCY;
-    this.joint = world.createImpulseJoint(
-      RAPIER.JointData.spring(0, mass * frequency * frequency, 2 * 0.85 * mass * frequency, { x: 0, y: 0, z: 0 }, fromVec(local)),
-      this.target, body, true,
-    );
-    body.setAngularDamping(1.5);
+    this.hand = [...worldPoint];
+    this.target = [...worldPoint];
+    this.time = time;
+    this.samples.push({ time, position: [...worldPoint] });
+    body.setAngularDamping(HELD_ANGULAR_DAMPING);
     body.wakeUp();
-    this.history.push({ time, point: [...worldPoint] });
   }
 
   /** Where the body's centre of mass is asked to be when the pointer holds the picked point at `worldPoint`. */
@@ -64,24 +85,38 @@ export class Grab {
   }
 
   /**
-   * Follows the pointer. `centre` overrides where the centre of mass is drawn to, for a piece
-   * that is being eased somewhere other than exactly under the pointer.
+   * The pointer's position, projected into the world. `fit` draws the picked point instead towards
+   * where it would be with the centre of mass at `fit.centre` and the piece turned as it is being
+   * held, by `fit.pull` (0…1): used when a piece is being drawn into its place.
    */
-  moveTo(worldPoint: Vec3, time: number, centre: Vec3 = this.centreFor(worldPoint)): void {
-    this.point = [...worldPoint];
-    this.target.setNextKinematicTranslation(fromVec(centre));
-    this.body.wakeUp();
-    this.history.push({ time, point: [...worldPoint] });
-    while (this.history.length > 2 && time - this.history[0].time > 0.12) this.history.shift();
+  setTarget(point: Vec3, fit?: { centre: Vec3; pull: number }): void {
+    if (!fit || fit.pull <= 0) { this.target = [...point]; return; }
+    const there = add3(fit.centre, quatRotate(this.orientation, this.pick));
+    this.target = [
+      point[0] + (there[0] - point[0]) * fit.pull,
+      point[1] + (there[1] - point[1]) * fit.pull,
+      point[2] + (there[2] - point[2]) * fit.pull,
+    ];
   }
 
-  /** Pointer velocity over the last ~0.1 s, the basis for a throw. */
-  velocity(time: number): Vec3 {
-    const first = this.history[0], last = this.history[this.history.length - 1];
-    // Holding still before letting go means "put it down", not "throw it".
-    if (!first || !last || last === first || time - last.time > 0.08) return [0, 0, 0];
-    const span = Math.max(1 / 240, last.time - first.time);
-    return clampLength3(scale3(sub3(last.point, first.point), 1 / span), SIM.maxThrowSpeed);
+  /** Where the picked point is now, its lever arm from the centre of mass, and how fast it moves. */
+  private pickedPoint(): { world: Vec3; arm: Vec3; velocity: Vec3 } {
+    const body = this.body;
+    const arm = quatRotate(toQuat(body.rotation()), this.pick);
+    const world = add3(toVec(body.worldCom()), arm);
+    const velocity = add3(toVec(body.linvel()), cross3(toVec(body.angvel()), arm));
+    return { world, arm, velocity };
+  }
+
+  /** The held point and its velocity: for the debug hook. */
+  get grip(): { world: Vec3; velocity: Vec3 } {
+    const { world, velocity } = this.pickedPoint();
+    return { world, velocity };
+  }
+
+  /** Velocity the hand would give the piece if it were let go now. */
+  estimatedVelocity(): Vec3 {
+    return releaseVelocity(this.samples, this.time);
   }
 
   /** Turns the orientation being held about a world axis. */
@@ -94,22 +129,48 @@ export class Grab {
     this.orientation = quatSlerp(this.orientation, rotation, Math.min(1, Math.max(0, fraction)));
   }
 
+  /** One fixed step: smooth the hand, then pull the piece's picked point after it. */
+  step(dt: number, time: number): void {
+    const body = this.body;
+    if (!body.isValid()) return;
+    this.time = time;
+    smoothDamp(this.hand, this.handVelocity, this.target, HAND_FREQUENCY, dt);
+    this.samples.push({ time, position: [...this.hand] });
+    while (this.samples.length > 2 && time - this.samples[0].time > RELEASE_WINDOW * 1.5) this.samples.shift();
+
+    const mass = body.mass();
+    if (!(mass > 1e-6)) return;
+    const { world, arm, velocity } = this.pickedPoint();
+    const inertia = body.effectiveAngularInertia();
+    const inverseInertia = invert3([inertia.m11, inertia.m12, inertia.m13, inertia.m12, inertia.m22, inertia.m23, inertia.m13, inertia.m23, inertia.m33] as Mat3);
+    if (!inverseInertia) return;
+
+    // Impulse at the picked point that makes it follow the hand like a critically damped spring,
+    // however heavy the piece is; limited to what a hand can do, and carrying the piece's weight.
+    const response = pointResponse(mass, inverseInertia, arm);
+    let impulse = servoImpulse(sub3(world, this.hand), sub3(velocity, this.handVelocity), response, SERVO_FREQUENCY, SERVO_DAMPING, dt);
+    impulse = clampLength3(impulse, mass * SIM.gravity * GRIP_STRENGTH * dt);
+    impulse = add3(impulse, [0, mass * SIM.gravity * dt, 0]);
+    body.applyImpulseAtPoint(fromVec(impulse), fromVec(world), true);
+
+    this.steady(dt);
+  }
+
   /**
    * One step of the orientation hold: a critically damped torsion spring, integrated implicitly so
    * it is stable for any body, applied through the body's actual inertia.
    */
-  steady(dt: number): void {
+  private steady(dt: number): void {
     const body = this.body;
-    const error = quatErrorVector(this.orientation, toQuat(body.rotation())); // how far the body has turned past the hold
+    const error = quatErrorVector(this.orientation, toQuat(body.rotation()));
     const spin = toVec(body.angvel());
-    const w = HOLD_FREQUENCY;
+    const w = this.holdFrequency;
     const k = 1 / (1 + 2 * w * dt + w * w * dt * dt);
     const change: Vec3 = [
       -dt * (w * w * error[0] + (2 * w + w * w * dt) * spin[0]) * k,
       -dt * (w * w * error[1] + (2 * w + w * w * dt) * spin[1]) * k,
       -dt * (w * w * error[2] + (2 * w + w * w * dt) * spin[2]) * k,
     ];
-    // Torque impulse for that change in angular velocity: world-space inertia times Δω.
     const i = body.effectiveAngularInertia();
     body.applyTorqueImpulse({
       x: i.m11 * change[0] + i.m12 * change[1] + i.m13 * change[2],
@@ -118,21 +179,33 @@ export class Grab {
     }, true);
   }
 
-  /** For when the held body has ceased to exist (it was welded into another): drop the target only. */
+  /** For when the held body has ceased to exist (it was welded into another): nothing to undo. */
   abandon(): void {
-    this.world.removeRigidBody(this.target);
+    // The hand holds no joint and no helper body, so there is nothing left to remove.
   }
 
+  /**
+   * Lets go. A piece carries on with the velocity it has, so the frame after the release looks
+   * like the one before. The one correction: if the held point was moving more slowly along the
+   * hand's direction than the hand itself (the servo was still catching up), it is given the
+   * shortfall, at most a quarter of the hand's speed. It is never slowed, and a hand that has
+   * stopped gives nothing.
+   */
   release(time: number, throwIt = true): void {
-    const velocity = this.velocity(time);
-    this.world.removeImpulseJoint(this.joint, true);
-    this.world.removeRigidBody(this.target);
-    if (!this.body.isValid()) return;
-    this.body.setAngularDamping(SHARD_DAMPING.angular);
-    if (throwIt && len3(velocity) > 0.5) {
-      // Blend rather than replace: the body already follows the hand through the spring.
-      const current = toVec(this.body.linvel());
-      this.body.setLinvel(fromVec(clampLength3(add3(scale3(current, 0.35), scale3(velocity, 0.65)), SIM.maxThrowSpeed)), true);
+    const body = this.body;
+    if (!body.isValid()) return;
+    this.time = time;
+    body.setAngularDamping(SHARD_DAMPING.angular);
+    const estimated = throwIt ? releaseVelocity(this.samples, time) : ([0, 0, 0] as Vec3);
+    const gripBefore = this.pickedPoint().velocity;
+    const bodyBefore = toVec(body.linvel());
+    const speed = len3(estimated);
+    if (throwIt && speed > 0.5) {
+      const along = scale3(estimated, 1 / speed);
+      const shortfall = Math.max(0, speed - dot3(gripBefore, along));
+      const boost = Math.min(shortfall, 0.25 * speed);
+      body.setLinvel(fromVec(clampLength3(add3(bodyBefore, scale3(along, boost)), MAX_THROW_SPEED)), true);
     }
+    Grab.last = { estimated, before: gripBefore, after: this.pickedPoint().velocity, bodyBefore, bodyAfter: toVec(body.linvel()), thrown: throwIt };
   }
 }

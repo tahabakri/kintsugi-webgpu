@@ -8,7 +8,7 @@ import { emitDust, ParticleSystem } from './effects/dust';
 import { CameraImpulse } from './effects/impact-flash';
 import { buildIntactBowl, fractureBowl, type FractureResult } from './fracture/fracture-system';
 import type { CrackEdge } from './fracture/crack-graph';
-import { CONTACT, fractureEnergy, strikerSpeed, type ImpactSpec } from './fracture/impact';
+import { strikerSpeed, type ImpactSpec } from './fracture/impact';
 import type { ShardGeometry } from './fracture/shard-builder';
 import type { Ray } from './gpu/camera';
 import { PRESETS } from './gpu/materials';
@@ -22,7 +22,8 @@ import { findOpenSpot, isOffStage, type Footprint } from './interaction/recover'
 import { hashInts, mulberry32 } from './math/random';
 import { QUAT_IDENTITY, quatConj, quatRotate, type Quat } from './math/quat';
 import { add3, cross3, dot3, len3, norm3, scale3, sub3, type Vec2, type Vec3 } from './math/vec';
-import { CARRY_SAG, Grab } from './physics/grab-joint';
+import { Grab, HOLD } from './physics/grab-joint';
+import { ImpactEpisodes, impactSeverity, type ImpactSample } from './physics/impact-model';
 import { Strikers } from './physics/striker';
 import { fromVec, PhysicsWorld, toQuat, toVec, type Contact, type Overlap } from './physics/world';
 import { RepairSystem, type RepairBodies } from './repair/repair-system';
@@ -31,11 +32,15 @@ import { MobileSheet } from './ui/mobile-sheet';
 import { installDebugHook } from './debug/hook';
 import { addQualitySelector, bindPanel, mountInterface, setPauseButton, setSlider, type Interface, type PanelAction } from './ui/panel';
 import { Coach, Hint, setStats, setStatus, showFallback } from './ui/status';
+import { PhysicsDebug } from './ui/physics-debug';
 
 /** The bowl rests a hair above the plinth so its first contact is a clean one. */
 const REST_HEIGHT = 0.004;
 const DROP_HEIGHT = 2.2;
 const INTACT = 0;
+
+/** Share of a striking ball's speed left after it has broken the bowl (about 30% of its energy). */
+const BALL_ENERGY_LEFT = 0.55;
 
 /**
  * How a piece in the hand is drawn to its place on the standing bowl, by how far from that place
@@ -69,6 +74,44 @@ export interface ScreenPoints {
   /** The middle of each crack, and a few points along it from one end to the other. */
   cracks: Array<ScreenPoint & { path: Array<[number, number]> }>;
   homes: ScreenPoint[];
+}
+
+/** One impact as the debug hook reports it. */
+export interface ImpactRecord {
+  time: number;
+  source: ImpactSample['source'];
+  point: Vec3;
+  normal: Vec3;
+  normalSpeed: number;
+  tangentSpeed: number;
+  effectiveMass: number;
+  rawEnergy: number;
+  concentration: number;
+  normalizedEnergy: number;
+  threshold: number;
+  bodyLinear: Vec3;
+  bodyAngular: Vec3;
+  /** Where on the bowl: around (u) and from the base to the rim (v). */
+  u: number;
+  v: number;
+  fractured: boolean;
+}
+
+export interface PhysicsInfo {
+  lastImpact: ImpactRecord | null;
+  impacts: ImpactRecord[];
+  grabVelocity: Vec3;
+  lastRelease: unknown;
+  activeStrikers: number;
+  interpolationAlpha: number;
+  momentumError: number;
+  /** The held point in the world and on screen (CSS pixels), while something is held. */
+  grip: { world: Vec3; screen: [number, number] | null } | null;
+  /** The terms of the momentum check, for the debug hook. */
+  momentum: Record<string, unknown>;
+  fragments: number;
+  bodyLinear: Vec3;
+  bodyAngular: Vec3;
 }
 
 export interface PieceState {
@@ -170,6 +213,12 @@ export class App implements PointerHost {
   private time = 0;
   private frameIndex = 0;
   private rebuildPending = false;
+  readonly impactLog: ImpactRecord[] = [];
+  private readonly episodes = new ImpactEpisodes();
+  private momentumError = 0;
+  private momentumTerms: Record<string, unknown> = {};
+  private alpha = 1;
+  private debugOverlay: PhysicsDebug | null = null;
   private lastPuff = -1;
   private fractureMs = 0;
   private frameMs = 0;
@@ -220,6 +269,7 @@ export class App implements PointerHost {
     // `?quality=high` or `?quality=ultra` starts at that level; the default adapts. `?debug`
     // adds a selector for it to the panel.
     const query = new URLSearchParams(window.location.search);
+    if (query.has('debug')) this.setPhysicsDebug(true);
     if (query.has('debug')) addQualitySelector(ui, QUALITY_LEVELS, renderer.quality, (level) => this.setQuality(level as QualityLevel));
     const level = query.get('quality');
     if (level) this.setQuality(level as QualityLevel);
@@ -288,6 +338,32 @@ export class App implements PointerHost {
 
   gpuInfo(): Record<string, unknown> {
     return this.renderer.info();
+  }
+
+  /** Everything the physics debug view and the automation hook report. */
+  physicsInfo(): PhysicsInfo {
+    const rest = this.physics.pieces.get(INTACT);
+    return {
+      lastImpact: this.impactLog.length ? this.impactLog[this.impactLog.length - 1] : null,
+      impacts: this.impactLog,
+      grabVelocity: this.grab ? this.grab.estimatedVelocity() : ([0, 0, 0] as Vec3),
+      lastRelease: Grab.last,
+      activeStrikers: this.strikers.count,
+      interpolationAlpha: this.alpha,
+      momentumError: this.momentumError,
+      momentum: this.momentumTerms,
+      grip: this.grab ? { world: this.grab.grip.world, screen: this.renderer.camera.project(this.grab.grip.world) as [number, number] | null } : null,
+      fragments: this.repair ? this.repair.componentCount() : 1,
+      bodyLinear: rest ? toVec(rest.body.linvel()) : ([0, 0, 0] as Vec3),
+      bodyAngular: rest ? toVec(rest.body.angvel()) : ([0, 0, 0] as Vec3),
+    };
+  }
+
+  /** Shows or hides the physics read-out. Development only: nothing in the interface turns it on. */
+  setPhysicsDebug(on: boolean): boolean {
+    if (on && !this.debugOverlay) this.debugOverlay = new PhysicsDebug(this.ui.root);
+    if (!on && this.debugOverlay) { this.debugOverlay.remove(); this.debugOverlay = null; }
+    return this.debugOverlay !== null;
   }
 
   /** Where every shard is in the world, which rigid group carries it, and whether that group is at rest. */
@@ -395,7 +471,7 @@ export class App implements PointerHost {
    * Breaks the intact bowl at a material position with a given normalised energy. This is the one
    * place a fracture is created: real contacts and the automation hook both end up here.
    */
-  breakAt(impact: ImpactSpec, cause: { point?: Vec3; direction?: Vec3; ball?: number } = {}): boolean {
+  breakAt(impact: ImpactSpec, cause: { point?: Vec3; direction?: Vec3; ball?: number; sample?: ImpactSample } = {}): boolean {
     const piece = this.physics.pieces.get(INTACT);
     if (!this.intact || !piece) return false;
     const result = fractureBowl(this.surface, impact, this.seed, this.controls);
@@ -405,8 +481,14 @@ export class App implements PointerHost {
     const body = piece.body;
     const rotation = toQuat(body.rotation());
     const origin = sub3(toVec(body.translation()), quatRotate(rotation, this.bowl.centroid));
-    const linear = toVec(body.linvel()), angular = toVec(body.angvel());
+    // The pieces carry on with the motion the bowl had as it met whatever it met, before the
+    // solver answered: the table or the ball then does to each piece what it would have done.
+    const sample = cause.sample;
+    const linear = sample ? sample.bodyLinear : toVec(body.linvel());
+    const angular = sample ? sample.bodyAngular : toVec(body.angvel());
     const centre = toVec(body.worldCom());
+    const parentMass = this.bowl.mass;
+    const bodyLinearNow = toVec(body.linvel());
     this.releaseGrab(false);
     this.drop = null;
     this.physics.removePiece(INTACT);
@@ -417,61 +499,61 @@ export class App implements PointerHost {
     const inward = scale3(this.surface.normal(OUTER, spec.u, spec.v), -1);
     const direction = cause.direction ? norm3(quatRotate(quatConj(rotation), cause.direction), inward) : inward;
     const rand = mulberry32(hashInts(result.pattern.rngSeed, 7));
-    const reach = result.pattern.radius * 0.55;
+    const reach = result.pattern.radius * 0.55 + 0.2;
     const energy = spec.energy;
     const shattered = result.pattern.shattered;
+    const sideways = spec.tangent ? norm3([spec.tangent[0], 0, spec.tangent[1]], [0, 0, 0]) : ([0, 0, 0] as Vec3);
 
-    // What struck the bowl gives up most of its momentum to the pieces round the contact. Share it
-    // out by distance: the nearest are knocked inwards hard enough to fall into the bowl, while
-    // the far side hardly feels it and simply falls away.
-    const ball = cause.ball !== undefined ? this.strikers.findByTag(cause.ball) : null;
-    const momentum = ball ? ball.mass() * len3(toVec(ball.linvel())) * 0.7 : 2.4 * Math.sqrt(energy);
-    const reachBlow = result.pattern.radius * 1.1 + 0.25;
-    let shares = 0;
+    // Fracture releases strain, and strain is internal: the separation each piece is given is
+    // strongest beside the blow, weaker further off, leans the way the blow went, and is shared
+    // out so that it adds no momentum to the whole. Heavy pieces move less than light ones.
+    const seps: Array<{ velocity: Vec3; spin: Vec3; mass: number }> = [];
     for (const shard of result.shards) {
-      if (!shard.survivor) shares += Math.exp(-len3(sub3(shard.centroid, hit)) / reachBlow);
-    }
-
-    for (const shard of result.shards) {
-      const fresh = this.physics.addPiece(shard, origin, rotation);
-      const arm = sub3(toVec(fresh.body.translation()), centre);
-      const carried = add3(linear, cross3(angular, arm));
       const away = sub3(shard.centroid, hit);
       const distance = len3(away);
       const jitter: Vec3 = [rand() - 0.5, rand() - 0.5, rand() - 0.5];
-      const turn = rand() - 0.5, share = 0.5 + rand();
-      // What stays standing only feels the blow as a nudge.
-      const hold = shard.survivor ? 0.06 : 1;
-      const small = hold / (1 + shard.mass / 0.35), large = hold / (1 + shard.mass / 1.2);
-
-      // The crushed zone bursts away from the contact: strongest beside it, never explosive.
-      const burst = (1.3 + 4.4 * energy) * Math.exp(-distance / reach) * small;
-      // The blow carries everything a little the way it was going, less with distance; the
-      // pieces it actually hit take their share of its momentum on top.
-      const struck = shard.survivor ? 0 : Math.min(7.5, (momentum * Math.exp(-distance / reachBlow)) / Math.max(shares, 1e-3) / Math.max(shard.mass, 0.02));
-      const shove = (0.5 + 1.8 * energy) * Math.exp(-distance / (reach * 3 + 1.2)) * large + struck;
-      // A wall that lets go all round releases its strain: each piece starts outwards from the
-      // axis with a twist of its own, so no two fall alike.
+      const share = 0.5 + rand();
+      const hold = shard.survivor ? 0.05 : 1;
+      const falloff = Math.exp(-distance / reach);
+      const handy = hold / (1 + shard.mass / 1.0);
+      const push = (0.3 + 1.7 * energy) * falloff * handy;
       const out = norm3([shard.centroid[0], 0, shard.centroid[2]], [0, 0, 0]);
-      const release = shattered ? (0.5 + 1.4 * energy) * share * large : 0;
-      const local = add3(
-        add3(scale3(norm3(away, inward), 0.6 * burst), scale3(direction, 0.55 * burst + shove)),
-        add3(add3(scale3(out, release), scale3([-out[2], 0, out[0]], release * turn * 1.6)), scale3(jitter, 0.3 * burst)),
-      );
-      const velocity = add3(carried, quatRotate(rotation, local));
-      const twist = (2 + 7 * energy) * Math.exp(-distance / reach) * hold + (shattered ? (1.6 + 3.4 * energy) * large : 0);
-      const spin = add3(angular, quatRotate(rotation, scale3(jitter, twist)));
+      const release = shattered ? (0.15 + 0.55 * energy) * share * handy : 0;
+      const dir = norm3(add3(add3(scale3(norm3(away, inward), 0.5), scale3(direction, 0.4)), add3(scale3(sideways, 0.25), scale3(jitter, 0.25))), direction);
+      const velocity = add3(scale3(dir, push), scale3(out, release));
+      const twist = (0.8 + 2.6 * energy) * falloff * hold + (shattered ? (0.5 + 1.2 * energy) * handy : 0);
+      seps.push({ velocity, spin: scale3(jitter, twist), mass: shard.mass });
+    }
+    let sepMass = 0, sepMomentum: Vec3 = [0, 0, 0];
+    for (const s of seps) { sepMass += s.mass; sepMomentum = add3(sepMomentum, scale3(s.velocity, s.mass)); }
+    const sepDrift = scale3(sepMomentum, 1 / Math.max(sepMass, 1e-6));
+
+    let afterMass = 0, afterMomentum: Vec3 = [0, 0, 0];
+    result.shards.forEach((shard, i) => {
+      const fresh = this.physics.addPiece(shard, origin, rotation);
+      const arm = sub3(toVec(fresh.body.translation()), centre);
+      const carried = add3(linear, cross3(angular, arm));
+      const velocity = add3(carried, quatRotate(rotation, sub3(seps[i].velocity, sepDrift)));
+      const spin = add3(angular, quatRotate(rotation, seps[i].spin));
       fresh.body.setLinvel(fromVec(velocity), true);
       fresh.body.setAngvel(fromVec(spin), true);
-    }
+      // Geometry mass: a body's own mass is only brought up to date by the next step.
+      const m = shard.mass;
+      afterMass += m;
+      afterMomentum = add3(afterMomentum, scale3(velocity, m));
+    });
+    // How far the pieces' total momentum is from the bowl's: a check on the hand-off, in units of
+    // "the whole bowl's mass moving at 1 unit per second" (or at its own speed, if faster).
+    const before = scale3(linear, parentMass);
+    this.momentumError = len3(sub3(afterMomentum, before)) / Math.max(1e-6, afterMass * Math.max(len3(linear), 1));
+    this.momentumTerms = { parentMass, afterMass, before, after: afterMomentum, linear, angular, nowLinear: bodyLinearNow };
 
-    // The striker has spent most of its energy breaking the wall; let it carry on, slowly.
-    if (cause.ball !== undefined && cause.direction) {
+    // A ball that broke the bowl has spent part of its energy on it. It was turned back by the
+    // contact while the fracture was being decided; give it back the motion it arrived with, less
+    // what the break took, so it goes on into the pieces and moves them for real.
+    if (cause.ball !== undefined && sample) {
       const ball = this.strikers.findByTag(cause.ball);
-      if (ball) {
-        const speed = len3(toVec(ball.linvel()));
-        ball.setLinvel(fromVec(scale3(cause.direction, Math.max(2, speed * 0.3))), true);
-      }
+      if (ball) ball.setLinvel(fromVec(scale3(sample.otherVelocity, BALL_ENERGY_LEFT)), true);
     }
 
     // Where the wall parts, a little powder and the odd crumb drop out of the new cracks.
@@ -501,13 +583,13 @@ export class App implements PointerHost {
     const point = cause.point ?? add3(origin, quatRotate(rotation, hit));
     this.burst(point, quatRotate(rotation, scale3(inward, -1)), spec.energy, true);
     this.impulse.kick(norm3(quatRotate(rotation, direction), [0, -1, 0]), spec.energy, this.renderer.camera.unitsPerPixel(point));
-    this.modes.disarm();
+    this.episodes.clear();
     this.hint.show('Switch to Repair, bring matching edges together and trace them in gold.', 6000);
     this.syncInterface();
     return true;
   }
 
-  private burst(point: Vec3, normal: Vec3, energy: number, broke: boolean): void {
+  private burst(point: Vec3, normal: Vec3, energy: number, broke: boolean, crumbs = false): void {
     const preset = PRESETS[this.material];
     const body: Vec3 = [preset.body[0], preset.body[1], preset.body[2]];
     const glaze: Vec3 = [preset.glaze[0], preset.glaze[1], preset.glaze[2]];
@@ -515,41 +597,71 @@ export class App implements PointerHost {
     const seed = hashInts(this.seed, Math.round(this.time * 1000));
     emitDust(this.particles, point, normal, energy, dust, seed, { reducedMotion: this.reducedMotion, broke });
     if (broke) emitChips(this.particles, point, normal, energy, glaze, body, seed, this.reducedMotion);
+    else if (crumbs) emitChips(this.particles, point, normal, 0.1, glaze, body, seed, this.reducedMotion);
   }
 
-  /** A contact on the intact bowl: break it if the blow was hard enough, otherwise just puff. */
+  /**
+   * Every contact of the intact bowl, whatever it met, becomes one measured sample and goes into
+   * the same episode: the fracture is judged once per collision, on its hardest moment.
+   */
   private onContact(contact: Contact): void {
     const piece = this.physics.pieces.get(INTACT);
     if (!piece || !this.intact) return;
-    const concentration = contact.other === 'ball' ? CONTACT.steel : CONTACT.table;
-    const energy = fractureEnergy(contact.effectiveMass, contact.normalSpeed, concentration, this.controls);
+    const rotation = toQuat(piece.body.rotation());
+    const local = add3(quatRotate(quatConj(rotation), sub3(contact.point, toVec(piece.body.translation()))), this.bowl.centroid);
+    const where = this.surface.materialOf(local);
+    const sample: ImpactSample = {
+      source: contact.other, ballIndex: contact.ballIndex, time: this.time, point: contact.point, normal: contact.normal,
+      localPoint: local, u: where.u, v: where.v, relativeVelocity: contact.relativeVelocity, otherVelocity: contact.otherVelocity,
+      normalSpeed: contact.normalSpeed, tangentSpeed: contact.tangentSpeed, effectiveMass: contact.effectiveMass,
+      bodyLinear: contact.bodyLinear, bodyAngular: contact.bodyAngular,
+    };
+    this.episodes.add(sample, impactSeverity(sample, this.controls).normalized);
+  }
+
+  /** Judges an episode once it has run its course: break the bowl if the blow was hard enough. */
+  private resolveImpact(): void {
+    const due = this.episodes.take(this.time);
+    if (!due) return;
+    const piece = this.physics.pieces.get(INTACT);
+    if (!piece || !this.intact) { this.episodes.clear(); return; }
+    const { sample } = due;
+    const severity = impactSeverity(sample, this.controls);
+    const energy = severity.normalized;
+    const record: ImpactRecord = {
+      time: +sample.time.toFixed(3), source: sample.source, point: sample.point, normal: sample.normal,
+      normalSpeed: sample.normalSpeed, tangentSpeed: sample.tangentSpeed, effectiveMass: sample.effectiveMass,
+      rawEnergy: severity.rawEnergy, concentration: severity.concentration, normalizedEnergy: energy, threshold: FRACTURE.threshold,
+      bodyLinear: sample.bodyLinear, bodyAngular: sample.bodyAngular, u: sample.u, v: sample.v, fractured: energy >= FRACTURE.threshold,
+    };
+    this.impactLog.push(record);
+    if (this.impactLog.length > 60) this.impactLog.shift();
     if (energy < FRACTURE.threshold) {
-      // Too soft to break: a silent tap, with a wisp of dust if it was at least a knock.
+      // Too soft to break. It still moved the bowl; a knock also lets go a little powder, and a
+      // harder one a crumb or two.
       if (energy > 0.035 && this.time - this.lastPuff > 0.25) {
         this.lastPuff = this.time;
-        this.burst(contact.point, scale3(contact.normal, -1), energy, false);
+        this.burst(sample.point, scale3(sample.normal, -1), energy, false, energy > 0.1);
       }
       return;
     }
 
     const rotation = toQuat(piece.body.rotation());
     const inverse = quatConj(rotation);
-    const local = add3(quatRotate(inverse, sub3(contact.point, toVec(piece.body.translation()))), this.bowl.centroid);
-    const where = this.surface.materialOf(local);
-
     // Tangential part of the blow, expressed in the chart's (around, along-profile) axes.
-    const direction = norm3(contact.relativeVelocity, contact.normal);
+    const direction = norm3(sample.relativeVelocity, sample.normal);
     const blow = quatRotate(inverse, direction);
-    const here = this.surface.position(OUTER, where.u, where.v);
-    const angle = where.u * Math.PI * 2;
+    const here = this.surface.position(OUTER, sample.u, sample.v);
+    const angle = sample.u * Math.PI * 2;
     const around: Vec3 = [-Math.sin(angle), 0, Math.cos(angle)];
-    const along = norm3(sub3(this.surface.position(OUTER, where.u, Math.min(1, where.v + 0.01)), here), [0, 1, 0]);
+    const along = norm3(sub3(this.surface.position(OUTER, sample.u, Math.min(1, sample.v + 0.01)), here), [0, 1, 0]);
     const tangent: Vec2 = [dot3(blow, around), dot3(blow, along)];
 
-    this.breakAt({ u: where.u, v: where.v, energy, tangent }, {
-      point: contact.point,
+    this.breakAt({ u: sample.u, v: sample.v, energy, tangent }, {
+      point: sample.point,
       direction,
-      ball: contact.other === 'ball' ? contact.ballIndex : undefined,
+      ball: sample.source === 'ball' ? sample.ballIndex : undefined,
+      sample,
     });
   }
 
@@ -589,6 +701,7 @@ export class App implements PointerHost {
     const contact = this.physics.step(watch, watch ? this.strikers.bodies : []);
     this.strikers.update(dt);
     if (contact) this.onContact(contact);
+    this.resolveImpact();
 
     if (this.repair) {
       // A piece that sits in its place is steadied there like any other, hand on it or not.
@@ -607,6 +720,7 @@ export class App implements PointerHost {
   step(seconds: number): void {
     const steps = Math.min(120 * 60, Math.max(0, Math.round(seconds / SIM.dt)));
     for (let i = 0; i < steps; i++) this.tick();
+    this.alpha = 1;
     this.particles.update(Math.min(seconds, 2));
     this.syncInterface();
   }
@@ -636,7 +750,8 @@ export class App implements PointerHost {
     if (!grab || this.drop) return;
     const camera = this.renderer.camera;
     const want = camera.onViewPlane(this.grabPointer.x, this.grabPointer.y, this.grabPlane);
-    let centre = grab.centreFor(want);
+    const centre = grab.centreFor(want);
+    let pulled: { centre: Vec3; pull: number } | undefined;
     this.fit = { held: -1, mate: -1, amount: 0 };
     this.seat.pull = 0;
 
@@ -667,10 +782,7 @@ export class App implements PointerHost {
         grab.lean(guide.target.rotation, (1 - smoothstep(SEAT.core, SEAT.turn, across)) * dt * 8);
         seat.pull = seat.latched ? 1 : 1 - smoothstep(SEAT.core, SEAT.reach, across);
         if (!this.depthByHand || seat.pull > 0.5) this.grabPlane = add3(this.grabPlane, scale3(camera.forward, depthError * seat.pull * Math.min(1, dt * 6)));
-        // The carrying spring lets a piece hang a little low; lift the target by as much, so
-        // that home is where it comes to rest.
-        const lifted: Vec3 = [home[0], home[1] + CARRY_SAG, home[2]];
-        centre = [lerp(centre[0], lifted[0], seat.pull), lerp(centre[1], lifted[1], seat.pull), lerp(centre[2], lifted[2], seat.pull)];
+        pulled = { centre: home, pull: seat.pull };
         if (!seat.latched && seat.pull > 0.97 && guide.edge.aligned) seat.latched = true;
         if (seat.latched) grab.lean(guide.target.rotation, 1);
         // The two edges that are about to meet warm a little as they close.
@@ -683,8 +795,8 @@ export class App implements PointerHost {
         this.fit = { held: this.grabbed, mate: guide.mate, amount: 1 - smoothstep(0.1, 0.75, guide.distance) };
       }
     }
-    grab.moveTo(want, this.time, centre);
-    grab.steady(dt);
+    grab.setTarget(want, pulled);
+    grab.step(dt, this.time);
   }
 
   /**
@@ -765,7 +877,7 @@ export class App implements PointerHost {
     this.pointer.cancel();
     this.releaseGrab(false);
     const from = toVec(piece.body.worldCom());
-    this.grab = new Grab(this.physics.world, piece.body, from, this.time);
+    this.grab = new Grab(piece.body, from, this.time);
     this.grabbed = INTACT;
     this.drop = { time: 0, from };
     this.syncInterface();
@@ -777,8 +889,8 @@ export class App implements PointerHost {
     drop.time += dt;
     const lift = 0.6, hold = 0.14;
     const t = smoothstep(0, lift, drop.time);
-    grab.moveTo([drop.from[0], drop.from[1] + DROP_HEIGHT * t, drop.from[2]], this.time);
-    grab.steady(dt);
+    grab.setTarget([drop.from[0], drop.from[1] + DROP_HEIGHT * t, drop.from[2]]);
+    grab.step(dt, this.time);
     if (drop.time < lift + hold) return;
 
     const body = grab.body;
@@ -835,7 +947,8 @@ export class App implements PointerHost {
   beginGrab(hit: BodyHit, x: number, y: number): boolean {
     if (hit.kind !== 'shard' || this.drop || this.paused) return false;
     this.releaseGrab(false);
-    this.grab = new Grab(this.physics.world, hit.body, hit.point, this.time);
+    this.grab = new Grab(hit.body, hit.point, this.time);
+    this.grab.holdFrequency = this.modes.mode === 'repair' ? HOLD.fitting : HOLD.handling;
     this.grabbed = hit.id;
     // In Repair mode the part of the bowl that is standing is steadied while a piece is fitted to
     // it, as the other hand would do; it is let go again with the piece.
@@ -889,8 +1002,8 @@ export class App implements PointerHost {
     const from = add3(hit.point, scale3(ray.direction, -3.5));
     // Keep the launch point above the table and in front of the wall.
     if (from[1] < 0.3) from[1] = 0.3;
+    // Strike stays armed until Escape or the Strike button turns it off: one ball per click.
     this.strikers.launch(from, hit.point, strikerSpeed(this.controls.impact));
-    this.modes.disarm();
   }
 
   paint(hit: CrackHit, amount: number): void {
@@ -1141,13 +1254,15 @@ export class App implements PointerHost {
       const over = renderer.camera.project([base[0], BOWL.height + 0.7, base[2]]);
       if (over) this.coach.place(over[0], over[1]);
     }
+    this.alpha = this.paused ? 1 : clamp(this.accumulator / SIM.dt, 0, 1);
     for (const piece of this.physics.pieces.values()) {
-      const pose = this.physics.pose(piece.id)!;
+      const pose = this.physics.poseAt(piece.id, this.alpha)!;
       const group = this.fit.amount > 0 && this.repair ? this.repair.component(piece.id) : -1;
       const meeting = group >= 0 && (group === this.repair!.component(this.fit.held) || piece.id === this.fit.mate) ? this.fit.amount : 0;
       renderer.setShardPose(piece.id, pose.position, pose.rotation, meeting);
     }
-    renderer.setBalls(this.strikers.renderState());
+    renderer.setBalls(this.strikers.renderState((body) => this.physics.blendBody(body, this.alpha)));
+    if (this.debugOverlay) this.debugOverlay.update(this.physicsInfo(), ms);
     renderer.setSeamWidth(lerp(0.018, 0.064, this.controls.seamThickness / 100));
     renderer.setMending(this.modes.mode === 'repair');
     renderer.setMeeting(this.meeting.where, this.meeting.reach);

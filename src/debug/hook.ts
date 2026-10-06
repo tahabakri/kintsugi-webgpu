@@ -1,12 +1,12 @@
-import { VERSION, type Controls, type MaterialName, type Mode, type Phase } from '../config';
-import type { App, AppStats, PieceState, ScreenPoints } from '../app';
+import { VERSION, type Controls, type MaterialName, type Mode, type Phase, type Tool } from '../config';
+import type { App, AppStats, PhysicsInfo, PieceState, ScreenPoints } from '../app';
 import type { QualityLevel } from '../gpu/renderer';
 
 export interface KintsugiHook {
   readonly ready: boolean;
   readonly version: string;
   readonly seed: number;
-  readonly state: Controls & { mode: Mode; phase: Phase; paused: boolean; material: string };
+  readonly state: Controls & { mode: Mode; tool: Tool; phase: Phase; paused: boolean; material: string };
   readonly stats: AppStats;
   reset(options?: { sameSeed?: boolean }): void;
   fractureAt(options: { u: number; v: number; energy: number }): void;
@@ -33,6 +33,10 @@ export interface KintsugiHook {
   getPieces(): PieceState[];
   /** Separate pieces whose collision shapes overlap by more than `deeper` world units (default 0.01). */
   getOverlaps(deeper?: number): Array<{ a: number; b: number; depth: number }>;
+  /** Physics measurements: the last impact and every one judged since, the hand, the strikers, interpolation and momentum. */
+  readonly physics: PhysicsInfo;
+  /** Shows or hides the on-screen physics read-out (also shown by `?debug`). */
+  setPhysicsDebug(on: boolean): boolean;
   /** Current orbit of the camera. */
   getCamera(): { azimuth: number; elevation: number; distance: number };
   /** What the pointer would act on at a screen position: the piece and the crack under it, if any. */
@@ -55,7 +59,7 @@ export function installDebugHook(app: App): void {
     version: VERSION,
     get seed() { return app.seed; },
     get state() {
-      return { ...app.controls, mode: app.mode(), phase: app.phase, paused: app.paused, material: app.material };
+      return { ...app.controls, mode: app.mode(), tool: app.tool(), phase: app.phase, paused: app.paused, material: app.material };
     },
     get stats() { return app.stats; },
     reset: (options) => app.reset(options?.sameSeed === true),
@@ -72,6 +76,8 @@ export function installDebugHook(app: App): void {
     getScreenPoints: () => app.screenPoints(),
     getPieces: () => app.pieceStates(),
     getOverlaps: (deeper) => app.overlaps(deeper).map(({ a, b, depth }) => ({ a, b, depth })),
+    get physics() { return app.physicsInfo(); },
+    setPhysicsDebug: (on) => app.setPhysicsDebug(on),
     getCamera: () => app.cameraState(),
     probe: (x, y) => {
       const body = app.pick(x, y), crack = app.crackAt(x, y);

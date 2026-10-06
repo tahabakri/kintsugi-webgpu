@@ -4,7 +4,11 @@ import type { Quat } from '../math/quat';
 import { len3, sub3, type Vec3 } from '../math/vec';
 import { toQuat, toVec, type Body, type BodyTag } from './world';
 
-const MAX_BALLS = 6;
+/** How many balls may be on the table at once; the oldest goes when another is thrown. */
+const MAX_BALLS = 8;
+/** A ball that has lain still this long (seconds) is let go of. */
+const IDLE_SECONDS = 45;
+const IDLE_SPEED = 0.15;
 const SHRINK_TIME = 0.35;
 
 interface Ball {
@@ -12,6 +16,8 @@ interface Ball {
   age: number;
   /** Seconds since the ball started to shrink away, or -1 while it is still in play. */
   leaving: number;
+  /** Seconds it has lain more or less still. */
+  idle: number;
 }
 
 /**
@@ -34,8 +40,9 @@ export class Strikers {
     return this.balls.map((ball) => ball.body);
   }
 
+  /** Balls in play: not counting one that is already shrinking away. */
   get count(): number {
-    return this.balls.length;
+    return this.balls.filter((ball) => ball.leaving < 0).length;
   }
 
   /**
@@ -64,7 +71,7 @@ export class Strikers {
         .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS),
       body,
     );
-    this.balls.push({ body, age: 0, leaving: -1 });
+    this.balls.push({ body, age: 0, leaving: -1, idle: 0 });
   }
 
   findByTag(index: number): Body | null {
@@ -86,7 +93,9 @@ export class Strikers {
       if (ball.leaving < 0) {
         const position = toVec(ball.body.translation());
         const lost = position[1] < -1.5 || Math.hypot(position[0], position[2]) > 8;
-        if (lost) ball.leaving = 0;
+        const v = ball.body.linvel();
+        ball.idle = Math.hypot(v.x, v.y, v.z) < IDLE_SPEED ? ball.idle + dt : 0;
+        if (lost || ball.idle > IDLE_SECONDS) ball.leaving = 0;
       } else {
         ball.leaving += dt;
         if (ball.leaving >= SHRINK_TIME) this.remove(ball);
@@ -95,10 +104,10 @@ export class Strikers {
   }
 
   /** Transforms for rendering; `scale` runs to zero as a ball leaves. */
-  renderState(): Array<{ position: Vec3; rotation: Quat; scale: number }> {
+  renderState(blend?: (body: Body) => { position: Vec3; rotation: Quat }): Array<{ position: Vec3; rotation: Quat; scale: number }> {
     return this.balls.map((ball) => ({
-      position: toVec(ball.body.translation()),
-      rotation: toQuat(ball.body.rotation()),
+      position: blend ? blend(ball.body).position : toVec(ball.body.translation()),
+      rotation: blend ? blend(ball.body).rotation : toQuat(ball.body.rotation()),
       scale: ball.leaving < 0 ? 1 : Math.max(0, 1 - ball.leaving / SHRINK_TIME),
     }));
   }

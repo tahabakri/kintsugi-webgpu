@@ -39,7 +39,11 @@ export const SIM = {
   gravity: 98.1,
   maxLinearSpeed: 60,
   maxAngularSpeed: 45,
-  maxThrowSpeed: 32,
+  /**
+   * Fastest a piece may leave the hand: 4.8 m/s at 10 cm per unit, a firm toss across a table. It
+   * is only a safety cap; measured hand speeds sit well below it (see the notes on throwing).
+   */
+  maxThrowSpeed: 48,
 } as const;
 
 export const BOWL = {
