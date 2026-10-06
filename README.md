@@ -11,16 +11,20 @@
 
 Break a porcelain bowl in your browser, then put it back together with gold.
 
-The bowl is not a model with a "broken" version waiting behind it. Where it cracks depends on
-where you hit it and how hard. Each piece is a real solid you can pick up, and the gold only runs
-along the cracks that break actually made.
+The bowl is not a model with a "broken" version waiting behind it. You can pick it up, drop it,
+throw it at the table or strike it with a steel ball, and the same collision decides what
+happens: where it cracks depends on where it was hit, how hard and in which direction. Each
+piece is a real solid you can pick up, and the gold only runs along the cracks that break
+actually made.
 
 This is the second of my Material Studies. No 3D engine, no textures, no model files: the bowl,
 the glaze, the light and the gold are all code.
 
 ## Try it
 
-1. Click **Strike bowl**, then click the bowl. A steel ball is thrown at that spot.
+1. Click **Strike bowl**, then click the bowl. A steel ball is thrown at that spot. Strike stays
+   armed: click again for another ball, and press Esc (or the button) to put it down. Or pick
+   the bowl up and let it fall, or throw it down.
 2. Switch to **Repair**. Pick up a piece and bring it near where it came from. It settles in.
 3. Drag the **gold brush** along the closed crack. A few seconds later the gold sets and the piece is bonded.
 
@@ -46,7 +50,7 @@ gives you a new bowl. There are four glazes to try.
 | Wheel while holding a piece | push it away or pull it closer |
 | Shift-drag while holding a piece | turn it |
 | `B` `R` | Break mode, Repair mode |
-| `S` `G` | Strike bowl, gold brush |
+| `S` `G` | Strike bowl (stays armed until Esc or `S`), gold brush |
 | `Space` `0` `Esc` | pause, reset view, let go |
 
 If a piece falls off the table, a **Recover pieces** button shows up in Repair mode.
@@ -57,12 +61,16 @@ If a piece falls off the table, a **Recover pieces** button shows up in Repair m
 <summary><b>The break</b></summary>
 
 The bowl's surface is treated as a flat sheet (around the bowl, and from foot to rim). When
-something hits it hard enough, seed points are scattered on that sheet, dense near the impact
-and sparse far away, and a power diagram splits the sheet into cells. A light blow knocks a hole
-out. A hard one breaks the wall all the way round and leaves the foot standing.
+something hits it hard enough, cracks are grown from the point of impact on that sheet: they
+keep their direction, drift with the stress of the wall, branch, lose energy and stop where they
+meet another crack or run out. A ring cracks out the cone round the blow; a hard one sends
+cracks the height of the wall and opens the foot ring. The sheet is cut along them, and the
+cracks are exactly the edges between the pieces.
 
-Each cell is then given thickness and closed up into a watertight mesh, handed to
-[Rapier](https://rapier.rs) as a rigid body, and let go. Same seed and same hit, same pieces.
+Each piece is then given thickness, closed up into a watertight mesh and handed to
+[Rapier](https://rapier.rs) as a rigid body that carries on with the motion the bowl had. Same
+seed, same hit, same pieces. It is a procedural approximation inspired by how brittle ceramic
+breaks, not a stress or fracture-mechanics simulation.
 </details>
 
 <details>
@@ -107,8 +115,8 @@ Open `http://localhost:5173`. To build the static site: `npm run build`.
 
 ```bash
 npm run typecheck
-npm test            # 39 unit tests: fracture, repair, recovery
-npm run test:e2e    # 18 browser tests, most need a real WebGPU adapter
+npm test            # 62 unit tests: impact, hand, fracture, repair, recovery
+npm run test:e2e    # 24 browser tests, most need a real WebGPU adapter
 ```
 
 Stack: TypeScript, Vite, WebGPU, WGSL, Rapier, Vitest, Playwright. No Three.js, no UI framework.
@@ -132,8 +140,11 @@ tests/          unit tests and the Playwright suite
 - I built and tested it on one laptop with an integrated Intel GPU, in Chrome. On that machine
   it runs at a reduced internal resolution to keep the frame rate up. Other browsers, phones and
   faster GPUs should work but I have not tried them.
-- The cracks are a pattern on the surface pushed straight through the wall. There is no stress
-  simulation, and a bowl only breaks once.
+- The cracks are a procedural network on the surface, pushed straight through the wall. It is
+  inspired by how brittle ceramic breaks and is not a stress simulation, and a bowl only breaks
+  once.
+- Working out a break takes a moment: about a quarter of a second inside the page on my laptop
+  for a hard blow, a visible hitch at the instant of impact.
 - Fitting pieces is assisted, on purpose. Doing it with a mouse and no help is not fun.
 - The camera stays in front of the wall. To reach the back of the bowl, look down into it.
 

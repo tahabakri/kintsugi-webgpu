@@ -40,8 +40,9 @@ export class MeshAssembler {
   fractureTriangles = 0;
 
   private readonly corners: Int32Array[];
-  private readonly extras: Array<Map<string, number>> = [new Map(), new Map()];
-  private readonly rimVertices = new Map<string, number>();
+  /** Vertices that are not grid corners, by u and then v: exact doubles are good keys, strings are slow. */
+  private readonly extras: Array<Map<number, Map<number, number>>> = [new Map(), new Map()];
+  private readonly rimVertices = new Map<number, Map<number, number>>();
   private readonly poles = [-1, -1];
   private readonly scratch = new Float32Array(6);
   private readonly stride: number;
@@ -110,19 +111,21 @@ export class MeshAssembler {
       const offset = column - this.columnStart;
       if (row >= 0 && offset >= 0 && offset <= this.surface.U) return this.corner(side, column, row);
     }
-    const key = `${u}:${v}`;
-    let index = this.extras[side].get(key);
+    let row = this.extras[side].get(u);
+    if (!row) this.extras[side].set(u, row = new Map());
+    let index = row.get(v);
     if (index === undefined) {
       index = this.surfacePoint(side, u, v);
-      this.extras[side].set(key, index);
+      row.set(v, index);
     }
     return index;
   }
 
   /** Vertex k of the rounded lip at angle u. */
   rim(u: number, k: number): number {
-    const key = `${u}:${k}`;
-    let index = this.rimVertices.get(key);
+    let row = this.rimVertices.get(u);
+    if (!row) this.rimVertices.set(u, row = new Map());
+    let index = row.get(k);
     if (index === undefined) {
       const s = this.scratch;
       const last = this.surface.profile.rimSegments;
@@ -131,7 +134,7 @@ export class MeshAssembler {
       else if (k === last) this.surface.point(INNER, u, 1, s);
       else this.surface.rimPoint(u, k, s);
       index = this.raw(s[0], s[1], s[2], s[3], s[4], s[5], u, 1, KIND_RIM, k / last);
-      this.rimVertices.set(key, index);
+      row.set(k, index);
     }
     return index;
   }

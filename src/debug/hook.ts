@@ -23,13 +23,15 @@ export interface KintsugiHook {
   step(seconds: number): void;
   /** `aperture` is the current RMS gap between the two sides of the crack, in world units. */
   getCracks(): Array<{ id: number; shardA: number; shardB: number | null; length: number; fill: number; cure: number; joined: boolean; aligned: boolean; aperture: number }>;
+  /** Where the time of the last fracture went, in milliseconds. */
+  getFractureTimings(): Record<string, number>;
   getGpuInfo(): object;
   /**
    * Screen positions (CSS pixels) of the pieces, of a point on each crack, and of the place each
    * loose piece belongs on the standing shell, for pointer-driven tests.
    */
   getScreenPoints(): ScreenPoints;
-  /** World position and motion of every shard, and whether it is still on the usable table. */
+  /** World position, orientation and motion of every shard, and whether it is still on the usable table. */
   getPieces(): PieceState[];
   /** Separate pieces whose collision shapes overlap by more than `deeper` world units (default 0.01). */
   getOverlaps(deeper?: number): Array<{ a: number; b: number; depth: number }>;
@@ -72,6 +74,7 @@ export function installDebugHook(app: App): void {
     alignAllForTest: () => app.alignAllForTest(),
     step: (seconds) => app.step(seconds),
     getCracks: () => app.cracks.map(({ id, shardA, shardB, length, fill, cure, joined, aligned, aperture }) => ({ id, shardA, shardB, length, fill, cure, joined, aligned, aperture })),
+    getFractureTimings: () => ({ total: app.stats.fractureMs, ...app.fractureTimings }),
     getGpuInfo: () => app.gpuInfo(),
     getScreenPoints: () => app.screenPoints(),
     getPieces: () => app.pieceStates(),

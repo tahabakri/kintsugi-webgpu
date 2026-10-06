@@ -51,6 +51,8 @@ export function buildPattern(surface: BowlSurface, impact: ImpactSpec, resetSeed
   const radius = fractureRadius(energy) * (shattered ? FRACTURE.crushShare : 1);
   const chart = makeChart(surface, spec.u, spec.v, radius);
   const rngSeed = fractureRngSeed(resetSeed, spec);
+  // On the very centre of the underside no crack may go (see crack-network), so there is nothing to grow.
+  if (spec.v < 0.1) return buildVoronoiPattern(surface, impact, resetSeed, controls);
   const U = surface.U;
   const columnStart = Math.round(chart.u0 * U) - U / 2;
   const uLeft = columnStart / U, uRight = (columnStart + U) / U;

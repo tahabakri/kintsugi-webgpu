@@ -20,7 +20,7 @@ import { pickBody, pickCrack, type BodyHit, type CrackHit } from './interaction/
 import { PointerController, type PointerHost } from './interaction/pointer';
 import { findOpenSpot, isOffStage, type Footprint } from './interaction/recover';
 import { hashInts, mulberry32 } from './math/random';
-import { QUAT_IDENTITY, quatConj, quatRotate, type Quat } from './math/quat';
+import { QUAT_IDENTITY, quatAngleBetween, quatConj, quatRotate, type Quat } from './math/quat';
 import { add3, cross3, dot3, len3, norm3, scale3, sub3, type Vec2, type Vec3 } from './math/vec';
 import { Grab, HOLD } from './physics/grab-joint';
 import { ImpactEpisodes, impactSeverity, type ImpactSample } from './physics/impact-model';
@@ -109,6 +109,8 @@ export interface PhysicsInfo {
   momentumError: number;
   /** The held point in the world and on screen (CSS pixels), while something is held. */
   grip: { world: Vec3; screen: [number, number] | null } | null;
+  /** What the seating assist saw on its last step while a piece was held. */
+  seating: { held: number; mate: number; seated: boolean; across: number; depthError: number; pull: number; latched: boolean; turn: number; aligned: boolean } | null;
   /** The terms of the momentum check, for the debug hook. */
   momentum: Record<string, unknown>;
   fragments: number;
@@ -127,6 +129,9 @@ export interface PieceState {
   asleep: boolean;
   /** True when the piece has left the table or slid out of reach. */
   offStage: boolean;
+  /** How far the piece is from its place on the standing part, in world units, and how far turned from it, in radians. */
+  homeDistance: number;
+  homeTurn: number;
 }
 
 export interface AppStats {
@@ -219,10 +224,13 @@ export class App implements PointerHost {
   private readonly episodes = new ImpactEpisodes();
   private momentumError = 0;
   private momentumTerms: Record<string, unknown> = {};
+  private seatingDebug: PhysicsInfo['seating'] = null;
   private alpha = 1;
   private debugOverlay: PhysicsDebug | null = null;
   private lastPuff = -1;
   private fractureMs = 0;
+  /** Where the last fracture's time went. */
+  fractureTimings: Record<string, number> = {};
   private frameMs = 0;
   private stepMs = 0;
   /** Resolution scale chosen by the frame-time governor, and its bookkeeping. */
@@ -355,6 +363,7 @@ export class App implements PointerHost {
       interpolationAlpha: this.alpha,
       momentumError: this.momentumError,
       momentum: this.momentumTerms,
+      seating: this.seatingDebug && { ...this.seatingDebug, pull: this.seat.pull, latched: this.seat.latched },
       grip: this.grab ? { world: this.grab.grip.world, screen: this.renderer.camera.project(this.grab.grip.world) as [number, number] | null } : null,
       fragments: this.repair ? this.repair.componentCount() : 1,
       bodyLinear: rest ? toVec(rest.body.linvel()) : ([0, 0, 0] as Vec3),
@@ -372,8 +381,16 @@ export class App implements PointerHost {
   /** Where every shard is in the world, which rigid group carries it, and whether that group is at rest. */
   pieceStates(): PieceState[] {
     const states: PieceState[] = [];
+    const shell = this.fracture ? this.physics.pieces.get(INTACT) : undefined;
+    const shellPose = shell ? this.physics.pose(INTACT) : null;
     for (const piece of this.physics.pieces.values()) {
       const pose = this.physics.pose(piece.id)!;
+      let homeDistance = 0, homeTurn = 0;
+      if (shell && shellPose) {
+        const home = add3(shellPose.position, quatRotate(shellPose.rotation, sub3(piece.geometry.centroid, shell.geometry.centroid)));
+        homeDistance = len3(sub3(pose.position, home));
+        homeTurn = quatAngleBetween(pose.rotation, shellPose.rotation);
+      }
       const v = piece.body.linvel(), w = piece.body.angvel();
       states.push({
         id: piece.id,
@@ -383,6 +400,8 @@ export class App implements PointerHost {
         spin: Math.hypot(w.x, w.y, w.z),
         asleep: piece.body.isSleeping(),
         offStage: isOffStage(toVec(piece.body.worldCom())),
+        homeDistance,
+        homeTurn,
       });
     }
     return states;
@@ -457,6 +476,10 @@ export class App implements PointerHost {
     this.strays = 0;
     this.tightenAt = -1;
     this.easeAt = -1;
+    // A new bowl starts with a clean record of what has hit it.
+    this.impactLog.length = 0;
+    this.episodes.clear();
+    this.momentumError = 0;
     this.coach.hide();
   }
 
@@ -480,6 +503,7 @@ export class App implements PointerHost {
     const result = fractureBowl(this.surface, impact, this.seed, this.controls);
     if (!result) return false;
     this.fractureMs = result.elapsedMs;
+    this.fractureTimings = result.timings;
 
     const body = piece.body;
     const rotation = toQuat(body.rotation());
@@ -742,6 +766,8 @@ export class App implements PointerHost {
     }
     this.fit = { held: -1, mate: -1, amount: 0 };
     this.seat = { pull: 0, latched: false };
+    this.seatingDebug = null;
+    this.physics.held = null;
     if (!this.grab) return;
     this.grab.release(this.time, throwIt);
     this.grab = null;
@@ -779,6 +805,11 @@ export class App implements PointerHost {
       const across = len3(sub3(home, add3(camera.eye, scale3(sight, depth))));
       const depthError = dot3(sub3(home, centre), camera.forward);
 
+      this.seatingDebug = {
+        held: this.grabbed, mate: guide.mate, seated: guide.seated, across: +across.toFixed(3), depthError: +depthError.toFixed(3),
+        pull: this.seat.pull, latched: this.seat.latched, turn: +quatAngleBetween(this.grab ? this.grab.orientation : pose.rotation, guide.target.rotation).toFixed(3),
+        aligned: guide.edge.aligned,
+      };
       if (guide.seated) {
         const seat = this.seat;
         if (seat.latched && across > SEAT.release) seat.latched = false;
@@ -881,6 +912,7 @@ export class App implements PointerHost {
     this.releaseGrab(false);
     const from = toVec(piece.body.worldCom());
     this.grab = new Grab(piece.body, from, this.time);
+    this.physics.held = piece.body;
     this.grabbed = INTACT;
     this.drop = { time: 0, from };
     this.syncInterface();
@@ -951,6 +983,7 @@ export class App implements PointerHost {
     if (hit.kind !== 'shard' || this.drop || this.paused) return false;
     this.releaseGrab(false);
     this.grab = new Grab(hit.body, hit.point, this.time);
+    this.physics.held = hit.body;
     this.grab.holdFrequency = this.modes.mode === 'repair' ? HOLD.fitting : HOLD.handling;
     this.grabbed = hit.id;
     // In Repair mode the part of the bowl that is standing is steadied while a piece is fitted to

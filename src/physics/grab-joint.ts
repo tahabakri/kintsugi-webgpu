@@ -59,7 +59,6 @@ export class Grab {
   static last: ReleaseRecord | null = null;
 
   private readonly pick: Vec3;
-  private readonly offset: Vec3;
   private target: Vec3;
   private readonly samples: HandSample[] = [];
   private time = 0;
@@ -70,7 +69,6 @@ export class Grab {
     const centre = toVec(body.worldCom());
     // The picked point in the body's frame, from its centre of mass, and in the world as a constant offset.
     this.pick = quatRotate(quatConj(this.orientation), sub3(worldPoint, centre));
-    this.offset = sub3(centre, worldPoint);
     this.hand = [...worldPoint];
     this.target = [...worldPoint];
     this.time = time;
@@ -79,9 +77,13 @@ export class Grab {
     body.wakeUp();
   }
 
-  /** Where the body's centre of mass is asked to be when the pointer holds the picked point at `worldPoint`. */
+  /**
+   * Where the body's centre of mass is when the picked point is at `worldPoint`, given how the
+   * body is turned now: a piece gripped away from its centre swings round the grip, so the
+   * offset between the two is not the one it had when it was picked up.
+   */
   centreFor(worldPoint: Vec3): Vec3 {
-    return add3(worldPoint, this.offset);
+    return sub3(worldPoint, quatRotate(toQuat(this.body.rotation()), this.pick));
   }
 
   /**

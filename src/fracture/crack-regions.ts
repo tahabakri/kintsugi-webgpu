@@ -224,6 +224,7 @@ export function buildRegions(network: CrackNetwork, uLeft: number, uRight: numbe
 
   // Merge cells of one region wherever the union is convex.
   const regionOf = Int32Array.from({ length: cells.length }, (_, i) => find(i));
+  if (marks.length < vertexU.length) marks = new Int32Array(vertexU.length * 2);
   const alive = new Uint8Array(cells.length).fill(1);
   const redirect = Int32Array.from({ length: cells.length }, (_, i) => i);
   const version = new Int32Array(cells.length);
@@ -236,9 +237,15 @@ export function buildRegions(network: CrackNetwork, uLeft: number, uRight: numbe
   // Whether turning at the middle point of a → b → c keeps the polygon convex.
   const turnsLeft = (au: number, av: number, bu: number, bv: number, cu: number, cv: number): boolean =>
     (bu - au) * (cv - bv) - (bv - av) * (cu - bu) >= -1e-12;
-  for (let pass = 0; pass < 8; pass++) {
-    let merged = 0;
-    for (let a = 0; a < cells.length; a++) {
+  // A pair that could not be joined can only become joinable if one of the two changes, so the
+  // cells to look at are a worklist: all of them to begin with, then those next to a merge.
+  const work: number[] = [];
+  const queued = new Uint8Array(cells.length).fill(1);
+  for (let i = cells.length - 1; i >= 0; i--) work.push(i);
+  for (let guard = 0; work.length > 0 && guard < cells.length * 40; guard++) {
+    {
+      const a = work.pop()!;
+      queued[a] = 0;
       if (!alive[a]) continue;
       for (let again = true; again;) {
         again = false;
@@ -265,13 +272,13 @@ export function buildRegions(network: CrackNetwork, uLeft: number, uRight: numbe
           alive[b] = 0;
           redirect[b] = a;
           version[a]++;
-          merged++;
+          // What lay next to either cell may now be able to join the new one.
+          for (const t of union.tag) { const r = resolve(t); if (r >= 0 && r !== a && !queued[r]) { queued[r] = 1; work.push(r); } }
           again = true;
           break;
         }
       }
     }
-    if (merged === 0) break;
   }
 
   // A vertex that lies in a straight line between two neighbours, with the same cell across both
@@ -334,6 +341,9 @@ export function buildRegions(network: CrackNetwork, uLeft: number, uRight: numbe
  * The cell made by joining A and B along the edge A has from vertex k to k + 1, which is B's edge
  * kb the other way. Null if the union is not convex, or would not be a simple polygon.
  */
+let marks = new Int32Array(0);
+let epoch = 0;
+
 function splice(A: Cell, k: number, B: Cell, kb: number, resolve: (x: number) => number, a: number, b: number): Cell | null {
   const nA = A.vid.length, nB = B.vid.length;
   const out: Cell = { u: [], v: [], vid: [], tag: [] };
@@ -341,7 +351,13 @@ function splice(A: Cell, k: number, B: Cell, kb: number, resolve: (x: number) =>
   for (let i = 1; i < nA; i++) take(A, (k + i) % nA);
   for (let i = 1; i < nB; i++) take(B, (kb + i) % nB);
   const n = out.vid.length;
-  if (n < 3 || new Set(out.vid).size !== n) return null;
+  if (n < 3) return null;
+  // No vertex twice: a polygon that touches itself is not one cell.
+  epoch++;
+  for (let i = 0; i < n; i++) {
+    if (marks[out.vid[i]] === epoch) return null;
+    marks[out.vid[i]] = epoch;
+  }
   // A neighbour that was on both cells would now be on the cell twice over, or on itself.
   for (const t of out.tag) { const r = resolve(t); if (r === a || r === b) return null; }
   for (let i = 0; i < n; i++) {

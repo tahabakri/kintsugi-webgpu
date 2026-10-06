@@ -112,6 +112,8 @@ export class PhysicsWorld {
   private fixedBody!: Body;
   /** The table top, to tell it from the rest of the stage. */
   private tableHandle = -1;
+  /** The body in the hand, if any: held pieces are not eased towards rest. */
+  held: Body | null = null;
   private history = new PoseHistory();
   /** Invisible limits of the room; they stop stray pieces but never count as something in view. */
   private boundsBody!: Body;
@@ -416,10 +418,22 @@ export class PhysicsWorld {
     return best;
   }
 
+  /**
+   * A piece that is only creeping or rocking loses a little more each step, as it would on linen
+   * or a worn table top. Fast tumbling is untouched; this is what lets a shard that is rocking on
+   * its curved back settle in about a second instead of for ever.
+   */
+  private static readonly REST = { speed: 0.9, spin: 1.8, linear: 0.985, angular: 0.965 } as const;
+
   private limitSpeeds(): void {
+    const rest = PhysicsWorld.REST;
     for (const body of this.bodies()) {
       if (body.isSleeping()) continue;
       const linear = toVec(body.linvel()), angular = toVec(body.angvel());
+      if (body !== this.held && !this.tackHolds.has(body.handle) && len3(linear) < rest.speed && len3(angular) < rest.spin) {
+        body.setLinvel(fromVec([linear[0] * rest.linear, linear[1] * rest.linear, linear[2] * rest.linear]), false);
+        body.setAngvel(fromVec([angular[0] * rest.angular, angular[1] * rest.angular, angular[2] * rest.angular]), false);
+      }
       if (!Number.isFinite(linear[0] + linear[1] + linear[2] + angular[0] + angular[1] + angular[2])) {
         body.setLinvel({ x: 0, y: 0, z: 0 }, true);
         body.setAngvel({ x: 0, y: 0, z: 0 }, true);

@@ -12,6 +12,8 @@ export interface FractureResult {
   graph: CrackGraph;
   /** Time spent generating the fracture, for the debug overlay. */
   elapsedMs: number;
+  /** Where that time went, in milliseconds. */
+  timings: { pattern: number; segments: number; shards: number; graph: number };
 }
 
 const now = (): number => (typeof performance !== 'undefined' ? performance.now() : Date.now());
@@ -38,13 +40,17 @@ export function fractureBowl(
   if (impact.energy < FRACTURE.threshold) return null;
   const started = now();
   const pattern = buildPattern(surface, impact, resetSeed, controls);
+  const t1 = now();
   if (pattern.faceCount < 2) return null;
   const segments = collectSegments(surface, pattern);
+  const t2 = now();
   const shards = buildShards(surface, pattern, segments);
+  const t3 = now();
   if (!shards.every(meshIsFinite)) return null;
   const graph = buildCrackGraph(surface, pattern, segments, shards.map((shard) => shard.centroid));
   if (graph.edges.length === 0) return null;
-  return { pattern, shards, graph, elapsedMs: now() - started };
+  const done = now();
+  return { pattern, shards, graph, elapsedMs: done - started, timings: { pattern: t1 - started, segments: t2 - t1, shards: t3 - t2, graph: done - t3 } };
 }
 
 /** The intact bowl is the degenerate fracture with a single face covering everything. */

@@ -405,7 +405,10 @@ export function generateCrackNetwork(input: NetworkInput): CrackNetwork {
   }
 
   // ---- 3. A hard blow opens the foot ring, and with it the wall comes away from the foot -------
-  if (E >= 0.8) {
+  // What reaches the wall. A blow on the wall sends all its strain through it; one on the foot has
+  // to travel up first, and does so only if it is hard: the harder, the more of it arrives.
+  const Ew = v0 > FOOT_TOP - 0.02 ? E : E * lerp(0.3, 1, smoothstep(0.3, 0.85, E));
+  if (Ew >= 0.8) {
     // So hard that the foot ring opens the whole way round: a cut that runs from one end of the turn
     // to the other, level at both ends (they are the same place on the bowl), so that the wall comes
     // away from the foot all round and no bridge is left across the seam.
@@ -420,8 +423,8 @@ export function generateCrackNetwork(input: NetworkInput): CrackNetwork {
     }
     cut[count][1] = cut[0][1];
     lay(cut, false, 'foot', -1, 0, [uLeft, uRight]);
-  } else if (E >= 0.26 && v0 > FOOT_TOP - 0.02) {
-    const width = clamp(lerp(0.1, 0.52, Math.pow(E, 0.8)) * (0.85 + 0.3 * rand()), 0.08, 0.5);
+  } else if (Ew >= 0.26) {
+    const width = clamp(lerp(0.1, 0.52, Math.pow(Ew, 0.8)) * (0.85 + 0.3 * rand()), 0.08, 0.5);
     const centre = u0 + (rand() - 0.5) * 0.08;
     const cut: Array<[number, number]> = [];
     const phase = rand() * 6.28;
@@ -437,17 +440,18 @@ export function generateCrackNetwork(input: NetworkInput): CrackNetwork {
   // A hard blow sends the strain round the whole wall: tall cracks, close together beside the
   // impact and further apart as the energy runs out, up towards the rim and down to the foot.
   // Each starts where the strain runs from, level with the blow, and grows both ways.
-  const spread = 0.465 * smoothstep(0.2, 0.8, E);
-  if (spread > 0.03 && v0 > FOOT_TOP - 0.02) {
+  const spread = 0.465 * smoothstep(0.2, 0.8, Ew);
+  if (spread > 0.03) {
     for (const side of [-1, 1]) {
       let offset = 0.05 + 0.05 * rand();
       while (offset < spread) {
         const fall = Math.exp(-offset / (0.55 * spread));
-        const level = clamp(v0 + (rand() - 0.5) * 0.14, 0.4, 0.9);
+        // Level with the blow on the wall; just above the foot when the blow was on the foot.
+        const level = v0 > FOOT_TOP - 0.02 ? clamp(v0 + (rand() - 0.5) * 0.14, 0.4, 0.9) : 0.44 + 0.1 * rand();
         const u = u0 + side * offset;
         if (u > uLow + 0.02 && u < uHigh - 0.02) {
           const start = builder.vertex(u, level, 'branch');
-          const reach = E * REACH * (0.5 + 0.7 * fall) * (0.8 + 0.4 * rand());
+          const reach = Ew * REACH * (0.5 + 0.7 * fall) * (0.8 + 0.4 * rand());
           const lean = (rand() - 0.5) * 0.4;
           const up = rand() < 0.5;
           // Upwards first or downwards first: whichever grows first claims the junctions.
@@ -492,10 +496,9 @@ export function generateCrackNetwork(input: NetworkInput): CrackNetwork {
   simplify(builder, L);
   if (crosses(builder)) builder.paths.forEach((p, i) => { p.vertices = original[i]; });
 
-  // Straight pieces, without repeats, and the numbers.
+  // Straight pieces, without repeats.
   const seen = new Set<string>();
-  const segments: Array<[number, number]> = [];
-  let totalLength = 0;
+  let segments: Array<[number, number]> = [];
   for (const path of builder.paths) {
     for (let i = 0; i + 1 < path.vertices.length; i++) {
       const a = path.vertices[i], b = path.vertices[i + 1];
@@ -504,9 +507,29 @@ export function generateCrackNetwork(input: NetworkInput): CrackNetwork {
       if (seen.has(key)) continue;
       seen.add(key);
       segments.push([a, b]);
-      const x = (builder.u[b] - builder.u[a]) * builder.circumference((builder.v[a] + builder.v[b]) / 2), y = (builder.v[b] - builder.v[a]) * L;
-      totalLength += Math.hypot(x, y);
     }
+  }
+  // A crack that stops inside a piece, with nothing at its end, separates nothing: it is not a
+  // break, and nothing is drawn or repaired along it. Leave it out, and whatever it left dangling.
+  const degree = new Map<number, number>();
+  for (const [a, b] of segments) { degree.set(a, (degree.get(a) ?? 0) + 1); degree.set(b, (degree.get(b) ?? 0) + 1); }
+  // Cracks that run out at the rim, or on to the seam where the turn closes, are attached to something.
+  const attached = (vertex: number) => builder.v[vertex] === 1 || builder.u[vertex] === uLeft || builder.u[vertex] === uRight;
+  for (let changed = true; changed;) {
+    changed = false;
+    segments = segments.filter(([a, b]) => {
+      const loose = (v: number) => degree.get(v) === 1 && !attached(v);
+      if (!loose(a) && !loose(b)) return true;
+      degree.set(a, degree.get(a)! - 1);
+      degree.set(b, degree.get(b)! - 1);
+      changed = true;
+      return false;
+    });
+  }
+  let totalLength = 0;
+  for (const [a, b] of segments) {
+    const x = (builder.u[b] - builder.u[a]) * builder.circumference((builder.v[a] + builder.v[b]) / 2), y = (builder.v[b] - builder.v[a]) * L;
+    totalLength += Math.hypot(x, y);
   }
   stats.totalLength = totalLength;
   stats.vertices = builder.u.length;
@@ -552,7 +575,7 @@ function clipSegment(p: [number, number], q: [number, number], uLow: number, uHi
 }
 
 /** Largest distance (world units) a vertex may be moved off its crack by straightening it. */
-const STRAIGHTEN = 0.007;
+const STRAIGHTEN = 0.01;
 
 /** Douglas–Peucker on every stretch of every crack between two vertices that must stay. */
 function simplify(builder: Builder, L: number): void {

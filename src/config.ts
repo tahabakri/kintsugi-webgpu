@@ -1,4 +1,4 @@
-export const VERSION = '1.0.0';
+export const VERSION = '1.1.0';
 
 export type MaterialName = 'porcelain' | 'celadon' | 'raku' | 'terracotta';
 export const MATERIALS: readonly MaterialName[] = ['porcelain', 'celadon', 'raku', 'terracotta'];
