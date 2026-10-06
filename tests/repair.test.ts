@@ -442,8 +442,10 @@ describe('fitting by hand', () => {
     const fill = edge.resin.fill, last = fill.length - 1;
     const put = depositResinFromEnd(edge, 1, 0.02, 0.5, 0.11, 0.6);
     expect(put).toBeGreaterThan(0);
-    expect(fill[last]).toBeGreaterThan(fill[last - 4]);
-    expect(fill[last - 4]).toBeGreaterThan(0);
+    // A few centimetres in, whatever the spacing of the samples, there is still some.
+    const inside = Math.max(1, Math.round(0.05 / edge.resin.spacing));
+    expect(fill[last]).toBeGreaterThan(fill[last - inside]);
+    expect(fill[last - inside]).toBeGreaterThan(0);
     expect(fill[0]).toBe(0);
     expect(fill.reduce((a, b) => a + b, 0)).toBeCloseTo(put, 5);
     // However much is asked for, a sample only holds so much.

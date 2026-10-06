@@ -9,7 +9,7 @@ export interface KintsugiHook {
   readonly state: Controls & { mode: Mode; tool: Tool; phase: Phase; paused: boolean; material: string };
   readonly stats: AppStats;
   reset(options?: { sameSeed?: boolean }): void;
-  fractureAt(options: { u: number; v: number; energy: number }): void;
+  fractureAt(options: { u: number; v: number; energy: number; tangent?: [number, number] }): void;
   setMode(mode: Mode): void;
   setMaterial(name: MaterialName): void;
   setControl(name: string, value: number): void;
@@ -63,7 +63,7 @@ export function installDebugHook(app: App): void {
     },
     get stats() { return app.stats; },
     reset: (options) => app.reset(options?.sameSeed === true),
-    fractureAt: (options) => { app.breakAt({ u: options.u, v: options.v, energy: options.energy }); },
+    fractureAt: (options) => { app.breakAt({ u: options.u, v: options.v, energy: options.energy, tangent: options.tangent }); },
     setMode: (mode) => app.setMode(mode),
     setMaterial: (name) => app.setMaterial(name),
     setControl: (name, value) => app.setControl(name, value),

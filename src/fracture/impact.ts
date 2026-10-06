@@ -2,7 +2,7 @@ import { clamp, FRACTURE, lerp, smoothstep, type Controls, DEFAULT_CONTROLS } fr
 import type { BowlSurface } from '../ceramic/uv-surface';
 import type { Vec2 } from '../math/vec';
 
-/** Where and how hard the bowl was hit, in material space. */
+/** Where and how hard the bowl was hit, in material space. The energy comes from the impact model (see physics/impact-model). */
 export interface ImpactSpec {
   u: number;
   v: number;
@@ -25,9 +25,6 @@ export interface Chart {
   scaleV: number;
 }
 
-/** How concentrated a contact is; a steel ball loads a far smaller patch than a table does. */
-export const CONTACT = { steel: 0.0215, table: 0.00097 } as const;
-
 export function brittlenessFactor(brittleness: number): number {
   const at = (b: number) => 0.45 + 1.1 * clamp(b / 100);
   return at(brittleness) / at(DEFAULT_CONTROLS.brittleness);
@@ -36,21 +33,6 @@ export function brittlenessFactor(brittleness: number): number {
 export function thicknessFactor(thickness: number): number {
   const at = (t: number) => 0.5 + clamp(t / 100);
   return at(thickness) / at(DEFAULT_CONTROLS.thickness);
-}
-
-/**
- * Normalised fracture energy of a contact:
- *   E = ½ · m_eff · v_n² · concentration · brittleness / thickness, clamped to [0, E_MAX].
- */
-export function fractureEnergy(
-  effectiveMass: number,
-  normalSpeed: number,
-  concentration: number,
-  controls: Pick<Controls, 'brittleness' | 'thickness'>,
-): number {
-  const kinetic = 0.5 * effectiveMass * normalSpeed * normalSpeed;
-  const energy = (kinetic * concentration * brittlenessFactor(controls.brittleness)) / thicknessFactor(controls.thickness);
-  return Number.isFinite(energy) ? clamp(energy, 0, FRACTURE.maxEnergy) : 0;
 }
 
 /** Geodesic radius of the damaged region, in world units. */

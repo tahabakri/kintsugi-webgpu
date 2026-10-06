@@ -34,10 +34,16 @@ export class Strikers {
   rebind(world: RAPIER.World): void {
     this.world = world;
     this.balls = [];
+    this.nextIndex = 0;
   }
 
   get bodies(): Body[] {
     return this.balls.map((ball) => ball.body);
+  }
+
+  /** Balls thrown since the bowl was last reset. */
+  get launched(): number {
+    return this.nextIndex;
   }
 
   /** Balls in play: not counting one that is already shrinking away. */

@@ -612,7 +612,7 @@ test.describe('the study', () => {
       await strike.click();
       await expect(strike).toHaveAttribute('aria-pressed', 'true');
       expect(await hook(page, (k) => k.state.tool)).toBe('strike');
-      expect((await physics(page)).activeStrikers).toBe(0);
+      expect((await physics(page)).launchedStrikers).toBe(0);
 
       // Three clicks, the first on the whole bowl, the others on whatever is left of it.
       for (let thrown = 1; thrown <= 3; thrown++) {
@@ -620,7 +620,12 @@ test.describe('the study', () => {
         expect(at, 'something to aim at').not.toBeNull();
         await page.mouse.click(at!.x, at!.y);
         await page.waitForTimeout(400);
-        expect((await physics(page)).activeStrikers).toBe(thrown);
+        // One ball per click. (A ball that has gone off the table is removed, so the ones still
+        // on it are counted too, but only the launches are exact.)
+        const now = await physics(page);
+        expect(now.launchedStrikers).toBe(thrown);
+        expect(now.activeStrikers).toBeGreaterThan(0);
+        expect(now.activeStrikers).toBeLessThanOrEqual(thrown);
         expect(await hook(page, (k) => k.state.tool)).toBe('strike');
         await expect(strike).toHaveAttribute('aria-pressed', 'true');
       }
@@ -633,7 +638,7 @@ test.describe('the study', () => {
       const at = await onAPiece(page);
       await page.mouse.click(at!.x, at!.y);
       await page.waitForTimeout(400);
-      expect((await physics(page)).activeStrikers).toBe(3);
+      expect((await physics(page)).launchedStrikers).toBe(3);
 
       // The button is a toggle.
       await strike.click();
@@ -642,7 +647,7 @@ test.describe('the study', () => {
       expect(await hook(page, (k) => k.state.tool)).toBe('none');
       await page.mouse.click(at!.x, at!.y);
       await page.waitForTimeout(300);
-      expect((await physics(page)).activeStrikers).toBe(3);
+      expect((await physics(page)).launchedStrikers).toBe(3);
     });
 
     test('a gentle placement leaves the bowl whole', async ({ page }) => {

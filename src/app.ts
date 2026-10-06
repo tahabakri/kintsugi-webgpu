@@ -103,6 +103,8 @@ export interface PhysicsInfo {
   grabVelocity: Vec3;
   lastRelease: unknown;
   activeStrikers: number;
+  /** Balls thrown since the last reset, whether or not they are still on the table. */
+  launchedStrikers: number;
   interpolationAlpha: number;
   momentumError: number;
   /** The held point in the world and on screen (CSS pixels), while something is held. */
@@ -349,6 +351,7 @@ export class App implements PointerHost {
       grabVelocity: this.grab ? this.grab.estimatedVelocity() : ([0, 0, 0] as Vec3),
       lastRelease: Grab.last,
       activeStrikers: this.strikers.count,
+      launchedStrikers: this.strikers.launched,
       interpolationAlpha: this.alpha,
       momentumError: this.momentumError,
       momentum: this.momentumTerms,
